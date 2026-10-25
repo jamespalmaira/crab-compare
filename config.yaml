@@ -5,6 +5,7 @@
 # identical.
 
 run_name: dev
+results_dir: results      # outputs go to results/<run_name>/ (not committed)
 
 data:
   # labels.csv columns: image_path, crab_id, species, sex, disease, maturity
