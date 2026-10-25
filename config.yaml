@@ -58,7 +58,12 @@ training:
   amp: false
   seeds: [0, 1, 2]
 
-device: auto              # auto (cuda if available, else cpu with a warning), cuda, cpu
+evaluation:               # on the test set of each run, always fp32
+  latency_warmup: 10      # inference-time runs discarded before timing
+  latency_runs: 50        # timed runs, batch of 1; mean ms per image
+  latency_cpu: true       # also time on CPU (GPU is timed when available)
+
+device: auto             # auto (cuda if available, else cpu with a warning), cuda, cpu
 
 gpu:
   # Cap PyTorch's share of dedicated VRAM so going over raises a clear

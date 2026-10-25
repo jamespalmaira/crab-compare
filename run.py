@@ -19,6 +19,8 @@ import torch
 
 from src.config import ConfigError, load_config
 from src.data import ATTRIBUTES, SPLIT_SETS, SplitError, attribute_rows, get_split, load_labels
+from src.evaluate import evaluate_run
+from src.report import write_tables
 from src.train import GPUOutOfMemory, NonFiniteLoss, limit_gpu_memory, resolve_device, train_one
 
 log = logging.getLogger("run")
@@ -107,7 +109,7 @@ def main(argv=None):
                  cfg["run_name"], out_dir, models, seeds, cfg["training"]["epochs"],
                  cfg["training"]["pretrained"], cfg["training"]["amp"])
 
-        results = []
+        run_rows, class_rows = [], []
         for attr in attributes:
             rows, split = splits[attr]
             folds = args.folds if args.folds is not None else range(len(split["folds"]))
@@ -117,7 +119,11 @@ def main(argv=None):
                         raise ConfigError(f"--folds {fold}: split has {len(split['folds'])} fold(s)")
                     for seed in seeds:
                         res = train_one(cfg, arch, rows, split, fold, seed, out_dir, device)
-                        results.append(res.info)
+                        row, per_class = evaluate_run(res, cfg, out_dir, device)
+                        run_rows.append(row)
+                        class_rows.append(per_class)
+                        # write after every run so finished results survive a later failure
+                        write_tables(out_dir, run_rows, class_rows, model_order=list(cfg["models"]))
                         del res
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -125,10 +131,11 @@ def main(argv=None):
         log.error("%s", e)
         return 2
 
-    for r in results:
-        log.info("%-14s %-24s fold %d seed %d  best epoch %d/%d  val macro-F1 %.4f",
-                 r["attribute"], r["arch"], r["fold"], r["seed"], r["best_epoch"], r["epochs_trained"],
-                 r["best_val_macro_f1"])
+    for r in run_rows:
+        log.info("%-10s %-24s fold %d seed %d | val F1 %.4f (epoch %d/%d) | test acc %.4f macro-F1 %.4f",
+                 r["attribute"], r["arch"], r["fold"], r["seed"], r["best_val_macro_f1"], r["best_epoch"],
+                 r["epochs_trained"], r["accuracy"], r["macro_f1"])
+    log.info("Wrote %s, %s and %s", out_dir / "per_seed.csv", out_dir / "per_class.csv", out_dir / "summary.csv")
     return 0
 
 
