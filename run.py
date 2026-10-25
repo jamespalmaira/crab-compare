@@ -47,6 +47,10 @@ def main(argv=None):
     args = parse_args(argv)
     try:
         cfg = load_config(args.config)
+        if cfg["training"].get("amp"):
+            log.warning("training.amp is true. The project decision is amp: false for all five models "
+                        "(see handoff.md): on the GTX 1650, AMP was slower, and a cuDNN fp16 bug gives "
+                        "batch-size-dependent NaNs in ResNet-50.")
         if args.labels:
             cfg["data"]["labels_csv"] = args.labels
         models = list(cfg["models"]) if args.models == ["all"] else args.models

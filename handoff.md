@@ -26,7 +26,12 @@ Out of scope for this bench: the mobile app, the multi-task model, decision-supp
 - **Split by individual crab, not by image.** All photos of one crab stay in one set. Stratified where possible. Fixed seed, saved to disk, reused by every model.
 - **One backbone for all attributes.** Selection uses one pre-written rule, not per-attribute picks by hand.
 - **Selection score:** 50% macro-F1, 20% inference time, 15% model size, 15% Grad-CAM compatibility. Min-max normalised. Weights fixed before results are seen.
-- **Fairness rules:** identical augmentation, optimizer, learning rate, batch size, epochs and early-stopping rule for every model.
+- **Fairness rules:** identical augmentation, optimizer, learning rate, batch size, epochs and early-stopping rule for every model. "Batch size" means the effective batch size (32): each model has its own micro-batch to fit the 4 GB GPU, and gradient accumulation brings every model to the same 32.
+- **Mixed precision (AMP): off for all five models (`training.amp: false`), final (decided 2026-10-26).** One global setting, never per model. Reasons, measured on the GTX 1650 (4 GB), torch 2.14.1+cu126, cuDNN 9.10.2:
+  - All ten configurations (five models, AMP on and off) fit in 4 GB at their configured batch sizes. The tightest is EfficientNet-B3 in fp32, at about 3.4 GB including the CUDA context.
+  - AMP was slower on this GPU, which has no tensor cores. fp32 training steps were 1.3–3.8× faster depending on the model.
+  - A cuDNN fp16 bug in ResNet-50's `layer4.0.downsample.0` (1×1 conv, 1024→2048, stride 2) produces NaNs that depend on batch size, not on the images. In eval it hits batch sizes 3–6, 11–13, 20 and larger, which leftover val/test batches can be. It is not an overflow: the fp32 output is below 4. The same layer is fine with cuDNN off or in fp32.
+  - The AMP code path is kept. `run.py` prints a warning if `amp: true` is set.
 - **Statistics:** Friedman test across models, McNemar test for pairs.
 - **No containers.** A virtual environment is sufficient for now.
 
