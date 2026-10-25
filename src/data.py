@@ -267,7 +267,8 @@ def build_loaders(datasets, batch_size, num_workers, seed):
         raise SplitError(f"Training set has {len(datasets['train'])} images, fewer than batch_size={batch_size}")
     common = dict(batch_size=batch_size, num_workers=num_workers, pin_memory=torch.cuda.is_available(),
                   worker_init_fn=_seed_worker if num_workers > 0 else None,
-                  persistent_workers=False)
+                  # keep workers between epochs; on Windows each restart re-imports torch
+                  persistent_workers=num_workers > 0)
     return {
         # drop_last avoids a size-1 batch, which BatchNorm cannot train on
         "train": DataLoader(datasets["train"], shuffle=True, drop_last=True, generator=g, **common),
