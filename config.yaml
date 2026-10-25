@@ -1,0 +1,53 @@
+# Crab model comparison: run configuration.
+# Every model uses the same data split, augmentation, optimizer, schedule,
+# epochs, effective batch size and seeds. Only the micro-batch size per model
+# differs (to fit GPU memory); gradient accumulation keeps the effective batch
+# identical.
+
+run_name: dev
+
+data:
+  # labels.csv columns: image_path, crab_id, species, sex, disease, maturity
+  # image_path is relative to the folder that holds labels.csv.
+  labels_csv: data/labels.csv
+  attributes: [species, sex, disease, maturity]
+  num_workers: 2
+
+split:
+  strategy: holdout       # holdout (single 70/15/15 split) or kfold (crab-level CV)
+  ratios: [0.70, 0.15, 0.15]   # train, val, test. In kfold, test is the held-out
+                               # fold and val is carved from the rest at val/(train+val).
+  n_folds: 5
+  seed: 42                # split seed; separate from the training seeds below
+  dir: splits             # saved next to labels.csv, e.g. data/splits/
+
+augmentation:             # training only; identical for every model
+  hflip_p: 0.5
+  rotate_limit: 15        # degrees
+  rotate_p: 0.5
+  color_jitter: {brightness: 0.2, contrast: 0.2, saturation: 0.2, hue: 0.02, p: 0.8}
+  resized_crop_scale: [0.7, 1.0]
+
+# Input size, mean and std come from each model's own timm config, not from here.
+# batch_size is the per-step micro-batch that fits on a 4 GB GTX 1650; it must
+# divide training.effective_batch_size.
+models:
+  efficientnet_b3:       {name: EfficientNet-B3, batch_size: 8}
+  resnet50:              {name: ResNet-50,       batch_size: 16}
+  densenet121:           {name: DenseNet-121,    batch_size: 16}
+  mobilenetv3_large_100: {name: MobileNetV3,     batch_size: 32}
+  vit_base_patch16_224:  {name: ViT,             batch_size: 8}
+
+training:
+  pretrained: true        # weights download on the first real run (needs internet)
+  effective_batch_size: 32
+  epochs: 50
+  optimizer: adamw
+  lr: 0.0001
+  weight_decay: 0.05
+  scheduler: cosine
+  early_stopping_patience: 10   # epochs without val macro-F1 improvement
+  amp: true               # mixed precision on GPU; set false to disable
+  seeds: [0, 1, 2]
+
+device: auto              # auto (cuda if available, else cpu with a warning), cuda, cpu
