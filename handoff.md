@@ -5,21 +5,20 @@ A command-line training and comparison bench. It trains five image classifiers o
 
 Out of scope for this bench: the mobile app, the multi-task model, decision-support rules, and any paper.
 
-## Current status (as of 2026-10-24)
+## Current status (as of 2026-10-26)
 
 | Item | Status |
 |---|---|
-| Requirements file (`requirements.txt`) | Written. Not yet installed or tested. |
+| Requirements file (`requirements.txt`) | Written, installed and verified. |
 | Build handout (`CLAUDE_CODE_HANDOUT.md`) | Written. |
 | Setup guide (`CLAUDE_CODE_SETUP.md`) | Written, including git and GitHub steps. |
-| Project folder and git repository | Not created yet. No git repo exists in `/home/claude`. |
-| GitHub account and private repo | Not confirmed. User must create them personally. |
-| Python environment | Not created. |
+| Project folder and git repository | Done. Git repo on branch `main`. |
+| GitHub account and private repo | Done. Remote `origin` is the private `crab-compare` repo; `main` is pushed. |
+| Python environment | Done. `.venv` with Python 3.10.19, torch 2.14.1+cu126, CUDA available (True). GPU: NVIDIA GeForce GTX 1650, 4 GB VRAM. |
+| Environment verification (`verify_env.py`) | Done. All five models and all package imports pass. |
 | Code (`src/`, `run.py`, `config.yaml`) | Not started. |
 | Crab dataset | Not collected or labeled yet. |
 | Labeling guide and expert | Not confirmed. |
-
-Nothing has been installed or executed in this environment yet.
 
 ## Decisions already made
 - **Models (five, via `timm`):** EfficientNet-B3, ResNet-50, DenseNet-121, MobileNetV3 (`mobilenetv3_large_100`), ViT (`vit_base_patch16_224`).

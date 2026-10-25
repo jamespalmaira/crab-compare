@@ -198,14 +198,23 @@ fi
 say "7. First commit"
 
 mkdir -p data results
-git add .gitignore requirements.txt setup.sh verify_env.py CLAUDE.md CLAUDE_CODE_HANDOUT.md CLAUDE_CODE_SETUP.md 2>/dev/null || true
+COMMIT_FILES=".gitignore .gitattributes requirements.txt setup.sh verify_env.py CLAUDE.md
+  handoff.md CLAUDE_CODE_HANDOUT.md CLAUDE_CODE_SETUP.md"
+for f in $COMMIT_FILES; do
+  if [ -f "$f" ]; then
+    git add -- "$f"
+  else
+    warn "Not staged, file missing: $f"
+  fi
+done
 if git diff --cached --quiet; then
   ok "Nothing new to commit"
 elif [ -z "$GIT_NAME" ] || [ -z "$GIT_EMAIL" ]; then
   warn "Skipping commit: set git name and email first, then run: git commit -m 'Initial project setup'"
 else
   git commit -q -m "Initial project setup: environment, requirements and verification"
-  ok "Committed: $(git log --oneline -1)"
+  ok "Committed. git log --oneline -1:"
+  git log --oneline -1
 fi
 
 # ---------------------------------------------------------------- 8. remaining manual steps
