@@ -47,7 +47,16 @@ training:
   weight_decay: 0.05
   scheduler: cosine
   early_stopping_patience: 10   # epochs without val macro-F1 improvement
-  amp: true               # mixed precision on GPU; set false to disable
+  # Mixed precision, one global setting for all models. Off: on the GTX 1650
+  # (cuDNN 9.10) fp16 returns NaN for ResNet-50 at some batch sizes, and fp32
+  # was faster for every model (see scripts/smoke_train.py).
+  amp: false
   seeds: [0, 1, 2]
 
 device: auto              # auto (cuda if available, else cpu with a warning), cuda, cpu
+
+gpu:
+  # Cap PyTorch's share of dedicated VRAM so going over raises a clear
+  # out-of-memory error instead of the Windows driver silently spilling into
+  # system RAM. The rest is left for the CUDA context and cuDNN workspace.
+  memory_fraction: 0.85
