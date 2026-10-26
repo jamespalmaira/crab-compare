@@ -832,6 +832,26 @@ class BasisAndRemovalTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build.load_removals(path)
 
+    def test_removals_come_after_the_group_cap_so_nothing_unreviewed_backfills(self):
+        recs = [rec(genus="Scylla", photo_id=f"i{k}", observer_id="u1", image_path=f"{k}.jpg") for k in range(8)]
+        grouping.assign(recs, "observer")
+        reviewed = build.apply_group_cap([dict(r) for r in recs], 5, seed=0)  # what the reviewer saw: 5 of 8
+        self.assertEqual(reviewed, 3)
+        probe = [dict(r) for r in recs]
+        build.apply_group_cap(probe, 5, seed=0)
+        in_labels = [r["photo_id"] for r in probe if not r["group_cap_dropped"]]
+        dropped = [r["photo_id"] for r in probe if r["group_cap_dropped"]]
+        (self.tmp / "removals.csv").write_text(f"id,reason\n{in_labels[0]},molt\n{dropped[0]},claw only\n",
+                                               encoding="utf-8")
+        stages, counts = build.post_image_rules(recs, {}, self.tmp, 5)
+        labelled = sorted(r["photo_id"] for r in recs if outputs.in_labels(r))
+        self.assertEqual(labelled, sorted(in_labels[1:]))  # 4 left: the gap is not refilled
+        self.assertEqual(counts["removed_manually"], 2)
+        self.assertEqual(counts["removals_outside_labels"], [dropped[0]])
+        self.assertEqual([r["stage"] for r in stages if r["genus"] == "ALL"],
+                         ["after group cap (5 per group)", "after manual removals (removals.csv)"])
+        self.assertEqual([r["photos"] for r in stages if r["genus"] == "ALL"], [5, 4])
+
     def make_run(self):
         """An earlier download run on disk: metadata.csv plus images."""
         data = self.tmp / "data"
@@ -883,8 +903,8 @@ class BasisAndRemovalTests(unittest.TestCase):
         stages = pd.read_csv(data / "external" / "runs" / "cleaned" / "stage_counts.csv")
         self.assertEqual(list(dict.fromkeys(stages["stage"])), [
             "fetched (licensed, deduplicated)", "after exclude_species", "after exclude_basis_of_record",
-            "after image checks (from download)", "after manual removals (removals.csv)",
-            "after group cap (5 per group)"])
+            "after image checks (from download)", "after group cap (5 per group)",
+            "after manual removals (removals.csv)"])
         review = data / "external" / "review"
         self.assertFalse((review / "stale.jpg").exists())
         self.assertTrue((review / "scylla.jpg").exists() and (review / "scylla" / "scylla_serrata.jpg").exists())

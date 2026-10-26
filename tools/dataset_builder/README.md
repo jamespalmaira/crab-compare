@@ -47,12 +47,17 @@ look-alike of edible crabs, not as an edible crab.
   review of the contact sheets, applied when `labels.csv` is built. Columns `id` (an
   `image_path` as in `labels.csv`, or a `photo_id` as in `metadata.csv`) and `reason`.
   Removals are logged and counted (`skip_reason = removed_manually`, the reason in
-  `removal_reason`); ids that match nothing are reported. Make removals only from visual
-  review before training, never from model results.
+  `removal_reason`); ids that match nothing, and ids the group cap had already left out of
+  `labels.csv`, are reported. Make removals only from visual review before training, never
+  from model results.
+- Removals are applied **after** the group cap (`max_photos_per_group`). The cap's choice
+  does not depend on the removals, so a removed photo leaves a gap instead of letting the cap
+  pull in another, unreviewed photo from the same observer. Every photo in `labels.csv` is
+  therefore one that was on the reviewed contact sheets.
 
 Photos and groups per genus at each stage (fetched, after `exclude_species`, after
-`exclude_basis_of_record`, after the image checks, after manual removals, after the group
-cap) are printed and written to `stage_counts.csv`.
+`exclude_basis_of_record`, after the image checks, after the group cap, after manual
+removals) are printed and written to `stage_counts.csv`.
 
 ### Rebuilding without downloading
 

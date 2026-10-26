@@ -343,17 +343,30 @@ def pre_download_rules(records, cfg, include_optional=False):
 
 
 def post_image_rules(records, cfg, data_dir, max_per_group, include_optional=False):
-    """Manual removals (removals file), then the group cap. Returns (stage rows, counts)."""
+    """The group cap, then manual removals (removals file). Returns (stage rows, counts).
+
+    Removals come after the cap so that a removed photo leaves a gap instead of letting the cap
+    pull in an unreviewed photo from the same observer: every photo in labels.csv is one that
+    was on the contact sheets reviewed for the removals file.
+    """
+    n_cap = apply_group_cap(records, max_per_group, cfg.get("group_cap_seed", 0))
+    stages = outputs.stage_counts(records, f"after group cap ({max_per_group or 'none'} per group)",
+                                  include_optional, after_cap=True)
     removals_path = Path(data_dir) / cfg.get("removals_file", "removals.csv")
     removals = load_removals(removals_path)
+    in_labels_before = {id(r) for r in records if outputs.in_labels(r, include_optional)}
     rm = apply_removals(records, removals)
-    stages = outputs.stage_counts(records, f"after manual removals ({removals_path.name})", include_optional)
-    n_cap = apply_group_cap(records, max_per_group, cfg.get("group_cap_seed", 0))
-    stages += outputs.stage_counts(records, f"after group cap ({max_per_group or 'none'} per group)",
+    outside = sorted({r["photo_id"] for r in records
+                      if r["skip_reason"] == "removed_manually" and id(r) not in in_labels_before})
+    if outside:
+        log.warning("removals: %d photo(s) were already left out of labels.csv by the group cap: %s",
+                    len(outside), outside[:10])
+    stages += outputs.stage_counts(records, f"after manual removals ({removals_path.name})",
                                    include_optional, after_cap=True)
     return stages, {"removals_file": str(removals_path), "removals_listed": len(removals),
                     "removed_manually": rm["removed"], "removals_unmatched": rm["unmatched"],
-                    "removals_already_skipped": rm["already_skipped"], "group_cap_dropped_photos": n_cap}
+                    "removals_already_skipped": rm["already_skipped"], "removals_outside_labels": outside,
+                    "group_cap_dropped_photos": n_cap}
 
 
 def log_stage_change(rows, label):
@@ -678,11 +691,13 @@ def exclusions_text(run_info):
              f"exclude_species {', '.join(rm.get('exclude_species') or []) or 'none'}: {rm.get('excluded_photos', 0)} photos",
              f"exclude_basis_of_record {', '.join(rm.get('exclude_basis_of_record') or []) or 'none'}: "
              f"{rm.get('excluded_basis_photos', 0)} photos",
-             f"manual removals ({rm.get('removals_file', 'removals file')}): {rm.get('removals_listed', 0)} listed, "
-             f"{rm.get('removed_manually', 0)} photos removed, {len(rm.get('removals_unmatched') or [])} unmatched, "
-             f"{len(rm.get('removals_already_skipped') or [])} already skipped",
              f"max_photos_per_group {rm.get('max_photos_per_group') or 'none'} (seed {rm.get('group_cap_seed')}): "
              f"{rm.get('group_cap_dropped_photos', 0)} photos left out of labels.csv",
+             f"manual removals after the cap ({rm.get('removals_file', 'removals file')}): "
+             f"{rm.get('removals_listed', 0)} listed, {rm.get('removed_manually', 0)} photos removed, "
+             f"{len(rm.get('removals_unmatched') or [])} unmatched, "
+             f"{len(rm.get('removals_already_skipped') or [])} already skipped, "
+             f"{len(rm.get('removals_outside_labels') or [])} already left out by the cap",
              outputs.format_stages(rm["stages"]), ""]
     return lines
 

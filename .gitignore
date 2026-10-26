@@ -2,8 +2,10 @@
 __pycache__/
 *.pyc
 data/*
-# Manual removals from visual review are versioned (see handoff.md); nothing else in data/ is.
+# Manual removals and the photo review log behind them are versioned (see handoff.md);
+# nothing else in data/ is.
 !data/removals.csv
+!data/review_log.csv
 results/
 checkpoints/
 *.pth

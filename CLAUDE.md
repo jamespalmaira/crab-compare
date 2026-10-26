@@ -25,7 +25,7 @@ This is the crab model comparison project (Dissertation 2). Read `CLAUDE_CODE_HA
 - Use the same split, augmentation, optimizer, epochs and seeds for all five models.
 - Choose the backbone only with the pre-written weighted rule. No manual per-attribute picks.
 - Do not promise exact age or hormone levels from photos.
-- Do not commit `data/`, `results/`, checkpoints or model files. The one exception is `data/removals.csv` (manual removals from visual review before training), which is versioned so removals are reproducible.
+- Do not commit `data/`, `results/`, checkpoints or model files. The exceptions are `data/removals.csv` (manual removals from visual review before training) and `data/review_log.csv` (the review verdicts behind them), which are versioned so removals are reproducible.
 - Do not force-push. Ask before any destructive git operation.
 - Ask before downloading large datasets or changing the model list.
 - Commit after each completed build step, with short descriptive messages.
