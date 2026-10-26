@@ -1,69 +1,72 @@
 # Handoff: Training and Test Bench (Dissertation 2)
 
 ## Purpose
-A command-line training and comparison bench. It trains five image classifiers on the same crab dataset under identical settings, evaluates them, and produces a ranked report. The top-ranked backbone is carried into Dissertation 3. The dataset is built from public sources only (see "Data" below).
+A command-line training and comparison bench. It trains five image classifiers on the same crab dataset under identical settings, evaluates them, and produces a ranked report. The top-ranked backbone is carried into Dissertation 3. The dataset is built from public sources only (see "Data" below). **The main task is genus-level classification** of four crab genera.
 
-Out of scope for this bench: the mobile app, the multi-task model, decision-support rules, and any paper.
+Out of scope for this bench: the mobile app, the multi-task model, decision-support rules, sex, maturity and disease, and any paper.
 
 ## Current status (as of 2026-10-26)
 
 | Item | Status |
 |---|---|
 | Requirements file (`requirements.txt`) | Written, installed and verified. |
-| Build handout (`CLAUDE_CODE_HANDOUT.md`) | Written. |
+| Build handout (`CLAUDE_CODE_HANDOUT.md`) | Written. It predates the decisions below; where they differ, this file wins. |
 | Setup guide (`CLAUDE_CODE_SETUP.md`) | Written, including git and GitHub steps. |
 | Project folder and git repository | Done. Git repo on branch `main`. |
 | GitHub account and private repo | Done. Remote `origin` is the private `crab-compare` repo; `main` is pushed. |
 | Python environment | Done. `.venv` with Python 3.10.19, torch 2.14.1+cu126, CUDA available (True). GPU: NVIDIA GeForce GTX 1650, 4 GB VRAM. |
 | Environment verification (`verify_env.py`) | Done. All five models and all package imports pass. |
-| Code (`src/`, `run.py`, `config.yaml`) | Build steps 1–7 done and tested on dummy data only (holdout and 5-fold, 1 epoch, 1–2 seeds, random weights): group-safe split on `crab_id`, model factory, training loop, evaluation with saved predictions, Friedman/McNemar (Holm), Grad-CAM check, ONNX export and latency, thop FLOPs, weighted ranking with sensitivity check, and `report.html`. Ready for public data: each attribute uses only its labeled rows and is skipped (with a message) below 2 classes or 30 groups per class; with a `source` column it reports per-source accuracy/macro-F1 and flags classes where one source supplies > 80% of images. `python run.py --analyze-only` re-runs steps 5–7 on an existing results folder. Not yet run with pretrained weights or real data. |
-| Crab dataset | Public datasets only (iNaturalist, GBIF, manually imported sets). Not assembled into `labels.csv` yet. The dataset builder (`tools/dataset_builder/`, see its README) is written and tested with mocked APIs; it resolves genera and species, also collects observations identified only to genus, fetches metadata, filters licenses, removes duplicates, writes `crab_id` by `--group-by`, and reports per-genus and per-species counts against the thresholds. No images downloaded yet. Genus dry run (2026-10-26, research grade, observer-level groups): Philippines only, *Portunus* 47 groups is the only trainable genus (*Scylla* 14, *Charybdis* 3); widened to 11 countries, *Scylla* 217, *Portunus* 451 and *Charybdis* 65 are all trainable, but every genus is > 80% iNaturalist and over half its photos come from one or two countries (*Scylla* 46% Taiwan, *Portunus* 57% Singapore). Optional *Atergatis*: 97 groups widened. Results in `data/external/runs/genus_*`. |
-| Labels | Taken from the public sources; no in-house labeling. **Genus is the main label**; species is secondary and exploratory. Sex and maturity are weak and unverified. Disease is dropped from D2 (no public source provides it). |
+| Code (`src/`, `run.py`, `config.yaml`) | Build steps 1–7 done and tested on dummy data only (random weights, 1 epoch): group-safe 5-fold split on `crab_id` stratified on species within genus, model factory, training loop, evaluation with saved predictions, the external Philippine test, Friedman/McNemar (Holm), Grad-CAM check, ONNX export and latency, thop FLOPs, genus-only ranking with the tie rule and a sensitivity check, and `report.html`. `python run.py --analyze-only` re-runs steps 5–7 on an existing results folder. Not yet run with pretrained weights or real data. **No training has been run.** |
+| Crab dataset | Public datasets only (iNaturalist, GBIF). Built by `tools/dataset_builder/` (see its README) with the settings below. Dry run (2026-10-26, widened countries, research grade, observer groups) after excluding *S. paramamosain*: *Scylla* 428 photos / 172 groups, *Portunus* 1847 / 451, *Charybdis* 105 / 65, *Atergatis* 372 / 97; after the 5-per-observer cap 325 / 1025 / 93 / 193 photos, groups unchanged. Image download: see the latest run in `data/external/runs/` and the contact sheets in `data/external/review/`, to be reviewed before training. |
+| Labels | Taken from the public sources; no in-house labeling, and no label is verified. **Genus is the main label**; species is secondary and exploratory. |
 
 ## Decisions already made
 - **Models (five, via `timm`):** EfficientNet-B3, ResNet-50, DenseNet-121, MobileNetV3 (`mobilenetv3_large_100`), ViT (`vit_base_patch16_224`).
-- **Data sources: public datasets only** (decided 2026-10-26): iNaturalist, GBIF, and manually imported sets. `labels.csv` has a `source` column naming where each image came from.
-- **Main task: genus-level classification** (decided 2026-10-26; `config.yaml` `data.main_attribute: genus`). Species-level classification is kept as a **secondary, exploratory** result. Reasons:
-  - **Label reliability for *Scylla*:** the *Scylla* species are hard to tell apart from photos, so public species-level identifications are the least reliable labels in the set, and many observations are identified only to genus. Genus labels are far more dependable.
-  - **Thin data for *S. tranquebarica*:** it has too few groups to train on as a species (21 observer-level groups in the earlier widened dry run, below the 30-group threshold), but its photos still count towards *Scylla*.
-  - The dataset builder also collects observations identified only to genus (`id_rank = genus`), which a species-level task would have to drop.
-- **Attributes in D2:** genus (main), species (secondary, exploratory), sex, maturity (`config.yaml` `data.attributes`). **Disease is dropped** from D2 because no public source provides it; the code still accepts a disease column but it is not configured. **Sex and maturity labels are weak and unverified**: they come from observers' notes or annotations in the public sources, not from an expert, and must be reported as such. Age and hormonal indicators are deferred. Hormones are not measurable from photos; the D3 proxy is "visible reproductive and molting indicators." Final list to be confirmed with the adviser before training.
-- **Missing labels:** each attribute is trained and evaluated only on rows where its label is non-empty. An attribute is skipped, with a logged reason, if it has fewer than 2 classes or any class has fewer than `data.min_groups_per_class` (30) distinct `crab_id` groups. Used and skipped attributes are recorded in `results/<run>/attributes.json` and `report.html`.
-- **Split by `crab_id` group, not by image.** `crab_id` is a grouping key, not a verified individual: depending on the source it is an observer, an observation, or an ID taken from the filename. All rows with the same `crab_id` stay in one set. Stratified where possible: the genus split is stratified on genus/species strata (`split.stratify_by`), with genus-only groups as their own stratum and strata under 10 groups folded into their genus, so every fold keeps each genus's species mix and every species with at least 10 groups appears in train, val and test of every fold. Fixed seed, saved to disk, reused by every model. The split cannot stop the same physical crab from appearing under two different groups (for example the same animal posted twice, or the same photo in two sources).
-- **Source checks:** with a `source` column, every run reports test accuracy and macro-F1 per source, and any class where one source supplies more than 80% of the images (`data.source_dominance_threshold`) is flagged, since a model can learn that source's camera, background or framing instead of the crab.
-- **Taxa (`tools/dataset_builder/species.yaml`):** genera *Scylla*, *Portunus*, *Charybdis*; species *S. serrata*, *S. olivacea*, *S. tranquebarica*, *S. paramamosain*, *P. pelagicus*, *P. sanguinolentus*, *C. feriata*. *Atergatis* / *Atergatis floridus* is an **optional candidate**: counted on its own line, left out of the totals and `labels.csv` unless `--include-optional`. The list still needs a taxonomist's check.
-- **Quality grade:** research grade by default. Genus-rank iNaturalist `needs_id` observations are included only with `genus_needs_id: true` or `--include-genus-needs-id`, and are flagged `review_flag = genus_needs_id`.
-- **One backbone for all attributes.** Selection uses one pre-written rule, not per-attribute picks by hand.
-- **Selection score:** 50% macro-F1, 20% inference time, 15% model size, 15% Grad-CAM compatibility. Min-max normalised. Weights fixed before results are seen.
+- **Data sources: public datasets only** (decided 2026-10-26): iNaturalist and GBIF (manual imports are supported but none are used). `labels.csv` has `source`, `country`, `genus`, `species`, `id_rank` and `quality_grade` columns.
+- **Main task: genus-level classification** (decided 2026-10-26; `config.yaml` `data.main_attribute: genus`). Species-level classification is kept as a **secondary, exploratory** result and is never scored. Reasons:
+  - **Label reliability for *Scylla*:** the *Scylla* species are hard to tell apart from photos, so public species-level identifications are the least reliable labels in the set, and some observations are identified only to genus. Genus labels are far more dependable.
+  - **Thin data for *S. tranquebarica*:** 21 observer groups in the widened dry run, below the 30-group threshold, so it cannot be trained as a species; its photos still count towards *Scylla*.
+- **Genera (four):** *Scylla*, *Portunus*, *Charybdis* and *Atergatis*. ***Atergatis floridus* is included as a reported toxic look-alike of edible crabs**, for the project's safety angle; **it is not an edible crab.**
+- **Species excluded: *Scylla paramamosain*** (`exclude_species` in the builder config). It has no Philippine photos, so its presence in the Philippines is uncertain, which conflicts with the "Philippine species" premise. It is fetched and counted, then left out of `labels.csv` (kept in `metadata.csv` with `skip_reason = excluded_species`). To confirm with a taxonomist.
+- **Countries: the widened list** (PH, ID, MY, BN, SG, TH, VN, KH, TW, TL, PG), because **the Philippines alone supports only one trainable genus** (Philippine dry run: *Portunus* 47 observer groups; *Scylla* 14; *Charybdis* 3).
+- **The data is about 95% non-Philippine, and genus is tied to country** (for example *Scylla* is 46% Taiwan and *Portunus* 57% Singapore). So **every Philippine photo is held out as an external test set** (`data.external_test`: `country = PH`), never used in any train, validation or cross-validation test split, and **every observer who appears in it is removed from the training side** (matched on `crab_id` and `observer_id`), so no person's photos are on both sides. Each trained run is tested on it, and `external_metrics.csv` and `report.html` give per-genus images and groups. It is the local check, not a precise estimate: some genera have very few Philippine groups (for example *Charybdis* about 3). **Tell the adviser that the dataset is mostly non-Philippine and that the Philippine external test is the local check**; it is a limitation, clearly stated.
+- **Quality grade: iNaturalist research grade only.** Genus-rank `needs_id` observations are **off** (they would add label doubt, and *Scylla* is already trainable). The code path stays (`genus_needs_id`, flagged `review_flag = genus_needs_id`).
+- **Grouping: `crab_id` = observer**, the strictest key. `crab_id` is a grouping key, not a verified individual crab. **At most 5 photos per observer within each genus** go into `labels.csv` (`max_photos_per_group: 5`, fixed seed), so a few prolific photographers do not dominate; the cap is within the genus so no genus loses a group. `metadata.csv` keeps every photo.
+- **Validation: 5-fold cross-validation by observer group**, stratified on species within genus (`split.stratify_by`: genus-only groups form their own stratum, strata under 10 groups fold into their genus), so every fold keeps each genus's species mix. *Charybdis*, the smallest genus (65 groups), gives about 13 test groups per fold. Fixed seed, saved to disk, reused by every model. The split cannot stop the same physical crab from appearing under two groups (the same animal posted by two people, or the same photo in two sources).
+- **Missing labels:** each attribute is trained and evaluated only on rows where its label is non-empty, and is skipped (with a logged reason) below 2 classes or below `data.min_groups_per_class` (30) groups in any class.
+- **Class imbalance:** the class-weighted loss and macro-F1 are kept, because the genera are very uneven (*Portunus* 1847 photos before the cap, *Charybdis* 105).
+- **Out of scope: sex, maturity and disease.** No public source gives disease, and the sex and maturity annotations are too sparse and unverified (in the widened dry run, male had 19 groups and juvenile 11). The code still accepts those columns; they are not configured.
+- **No label or `crab_id` is to be described as verified** in any output: genus and species come from public identifications, and `crab_id` is a grouping key.
+- **Source checks:** every run reports test accuracy and macro-F1 per source, and flags any class where one source supplies more than 80% of the images. Every genus is over 80% iNaturalist, so all are flagged; this is a known limitation.
+- **One backbone for all attributes, scored on genus only.** Selection uses one pre-written rule, not per-attribute picks by hand. **Only the main attribute is scored** (`selection.attributes: [genus]`, decided 2026-10-26, before any results): exploratory results (species) are reported but must not affect the choice of backbone.
+- **Selection score:** 50% macro-F1, 20% inference time (ONNX Runtime CPU latency, batch 1), 15% model size, 15% Grad-CAM compatibility. Min-max normalised. Weights fixed before results are seen.
+- **Tie rule (on by default; the recommendation):** the task will probably be easy for all five models, so a model is **tied with the best** when it is not significantly worse by McNemar (Holm-corrected) and its mean macro-F1 is within one standard deviation of the best. Tied models are ranked by speed, size and Grad-CAM only (same weights); the others follow in plain-score order. `ranking.md` and `report.html` report both the plain weighted ranking and the tie-rule ranking and say which is the recommendation.
 - **Fairness rules:** identical augmentation, optimizer, learning rate, batch size, epochs and early-stopping rule for every model. "Batch size" means the effective batch size (32): each model has its own micro-batch to fit the 4 GB GPU, and gradient accumulation brings every model to the same 32.
 - **Mixed precision (AMP): off for all five models (`training.amp: false`), final (decided 2026-10-26).** One global setting, never per model. Reasons, measured on the GTX 1650 (4 GB), torch 2.14.1+cu126, cuDNN 9.10.2:
   - All ten configurations (five models, AMP on and off) fit in 4 GB at their configured batch sizes. The tightest is EfficientNet-B3 in fp32, at about 3.4 GB including the CUDA context.
   - AMP was slower on this GPU, which has no tensor cores. fp32 training steps were 1.3–3.8× faster depending on the model.
   - A cuDNN fp16 bug in ResNet-50's `layer4.0.downsample.0` (1×1 conv, 1024→2048, stride 2) produces NaNs that depend on batch size, not on the images. In eval it hits batch sizes 3–6, 11–13, 20 and larger, which leftover val/test batches can be. It is not an overflow: the fp32 output is below 4. The same layer is fine with cuDNN off or in fp32.
   - The AMP code path is kept. `run.py` prints a warning if `amp: true` is set.
-- **Statistics:** Friedman test across models, McNemar test for pairs.
+- **Statistics:** Friedman test across models (folds as blocks), McNemar test for pairs (Holm-corrected).
 - **No containers.** A virtual environment is sufficient for now.
 
-## Open questions (must be resolved before training)
-1. **Sample size:** distinct `crab_id` groups per class. The bench skips any attribute with a class under 30 groups; the target is at least 50 per genus (and per species for the exploratory species task). Count groups, not photos.
-2. **Validation strategy:** the handout specifies a 70/15/15 group-level split with 3 to 5 seeds. If the dataset is small, switch to 5-fold group-level cross-validation. Decide before training.
-3. **Attribute list:** disease is dropped. Confirm with the adviser whether the weak sex and maturity labels are reported in D2 (and if so, as exploratory results with their label source stated), and whether egg-bearing/molt is included.
-4. **Label quality:** which public labels to accept (for example iNaturalist research-grade only), whether to spot-check a sample of species, sex and maturity labels against a reference, and whether to report agreement (Cohen's kappa) on that sample.
-5. **Grouping key per source:** which field becomes `crab_id` for each source (observation ID, observer, or filename ID), and how to find duplicates across sources (the same photo or animal in iNaturalist and GBIF) before splitting.
-6. **Source confounding:** what to do when a class is flagged (one source > 80% of its images): rebalance, add sources, or report it as a limitation.
-7. **Image licences:** record each image's licence and attribution from the source, and check that the licences allow use in the dissertation.
-8. **Selection and the exploratory attributes:** the ranking averages test macro-F1 over every trained attribute, so the exploratory species, sex and maturity results currently count as much as genus. Decide (before results are seen) whether selection should use genus only, or keep the average.
-9. **Atergatis floridus:** decide whether the optional candidate joins the task (as a fourth genus or a "not a target crab" class) or stays out.
-10. **Genus-rank `needs_id`:** decide whether to include these flagged records, and whether to require `identifications=most_agree` for them.
-11. **Mobile app:** not in this bench. Current recommendation is a basic on-device speed test in D2 and the full app in the final dissertation. Confirm with adviser.
+## Open questions
+1. **Taxonomy:** confirm the species names with a taxonomist, in particular the **blue swimming crab** (*Portunus pelagicus* in the sources; the complex has been split into several species) and the ***Scylla*** species, and confirm that excluding *S. paramamosain* is right.
+2. **Scope:** confirm the scope with the adviser: genus-level main task, species as exploratory, sex, maturity and disease out of scope, *Atergatis floridus* as the toxic look-alike, and the mostly non-Philippine data with the Philippine external test as the local check.
+3. **Contact-sheet review:** check `data/external/review/` for wrong genera, non-crab images, preserved museum specimens (some GBIF images) and cooked or market crabs, before training.
+4. **Label quality:** whether to spot-check a sample of genus (and species) labels against a reference, and report agreement (Cohen's kappa) on that sample.
+5. **Duplicates across groups:** the same photo or animal under two observers or sources is only partly caught (GBIF copies of iNaturalist records and near-duplicate images are removed).
+6. **Source confounding:** every genus is over 80% iNaturalist and concentrated in one or two countries; report it as a limitation, or rebalance if more sources are found.
+7. **Image licences:** `ATTRIBUTION.md` lists each image's licence and credit; most are CC-BY-NC, so check that the dissertation's use is non-commercial, and register a GBIF derived dataset for the DOI.
+8. **Mobile app:** not in this bench. Current recommendation is a basic on-device speed test in D2 and the full app in the final dissertation. Confirm with adviser.
 
-Resolved: the GitHub account and private `crab-compare` repository exist, and git name/email are set by the user (Claude Code must still not invent or change them).
+Resolved on 2026-10-26: validation (5-fold by observer), selection attributes (genus only), *Atergatis* (fourth genus), genus-rank `needs_id` (off), attribute list (genus and species only). The GitHub account and private `crab-compare` repository exist, and git name/email are set by the user (Claude Code must still not invent or change them).
 
 ## Next steps, in order
-Done: GitHub repo, environment setup and verification, and build steps 1–7 of `CLAUDE_CODE_HANDOUT.md`, tested on dummy data.
-1. Resolve the open questions above with the adviser.
-2. Review the dry-run counts in `data/external/runs/`, then (after approval) download with the dataset builder, which writes `data/labels.csv`: `image_path`, `crab_id` (the agreed grouping key), `genus`, `species` (blank when identified only to genus), `sex`, `maturity` (blank where unknown), `source`, `id_rank`, `quality_grade`, `review_flag`; duplicates across sources removed.
-3. Run `python run.py --attribute all --splits-only` to see which attributes are usable, the genus/species composition of every fold, and the source-balance warnings before training.
+Done: GitHub repo, environment setup and verification, build steps 1–7 tested on dummy data, dataset settings, image download.
+1. Review the contact sheets in `data/external/review/` (per genus, and per species within each genus).
+2. Confirm the taxonomy and scope (open questions 1 and 2).
+3. Run `python run.py --attribute all --splits-only` to see the external split, the usable attributes, the genus/species composition of every fold, and the source-balance warnings.
 4. First real run with pretrained weights (needs internet once, about 550 MB of weights).
 5. Commit code changes after each step; never commit data or results.
 
@@ -72,11 +75,12 @@ Done: GitHub repo, environment setup and verification, and build steps 1–7 of 
 crab-compare/
   requirements.txt
   config.yaml
-  data/              (not in git)
+  data/              (not in git)  labels.csv, external/<source>/<genus or species>/, external/review/, external/runs/
   src/
     config.py  data.py  models.py  train.py  evaluate.py  stats.py  gradcam.py  export.py  select.py
     analyze.py  report.py
-  scripts/           make_dummy_data.py, check_models.py, smoke_train.py
+  scripts/           make_dummy_data.py, check_models.py, smoke_train.py, dataset_summary.py
+  tools/dataset_builder/   public-data builder (see its README)
   tests/             python -m unittest discover -s tests -t .
   run.py
   results/           (not in git)
@@ -86,9 +90,9 @@ crab-compare/
 ```
 python run.py --config config.yaml --models all --seeds 3                      # main task: genus
 python run.py --config config.yaml --attribute species --models all --seeds 3  # secondary, exploratory
-python run.py --config config.yaml --attribute all --models resnet50 efficientnet_b3
-python run.py --config config.yaml --attribute all --splits-only      # check usable attributes and sources
+python run.py --config config.yaml --attribute all --splits-only      # external split, usable attributes, folds
 python run.py --config config.yaml --run-name <run> --analyze-only    # re-run statistics, ranking, report
+python -m tools.dataset_builder --dry-run                             # counts only (widened, observer groups)
 ```
 
 ## Rules for whoever continues this work
@@ -98,9 +102,10 @@ python run.py --config config.yaml --run-name <run> --analyze-only    # re-run s
 - Do not force-push or commit data, checkpoints or results.
 - Ask the user before downloading large datasets or changing the model list.
 - Log random seeds, GPU model, CUDA version and package versions with every result.
-- Do not describe `crab_id` as a verified individual, or sex and maturity labels as verified, in any output.
+- Do not describe `crab_id` as a verified individual, or any label (genus, species, sex, maturity) as verified, in any output.
 
 ## Reference files
 - `requirements.txt`
 - `CLAUDE_CODE_HANDOUT.md`
 - `CLAUDE_CODE_SETUP.md`
+- `tools/dataset_builder/README.md`
