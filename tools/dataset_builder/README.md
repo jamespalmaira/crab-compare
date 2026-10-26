@@ -21,9 +21,25 @@ queried on its own as well as through its species:
 - **GBIF:** the occurrence search has no rank filter (tested: `taxonRank=` and `rank=` are
   ignored), so the genus query is filtered to records with `taxonRank` GENUS here.
 
-`optional: true` marks a candidate (currently *Atergatis* / *Atergatis floridus*) that is
-fetched and counted on its own line, but left out of the ALL totals and of `labels.csv`
-unless `--include-optional` is given.
+`optional: true` marks a candidate that is fetched and counted on its own line, but left
+out of the ALL totals and of `labels.csv` unless `--include-optional` is given. No entry is
+optional now: *Atergatis* (*A. floridus*) is the fourth genus, included as a reported toxic
+look-alike of edible crabs, not as an edible crab.
+
+### Project settings (`config.yaml`)
+
+- `defaults`: countries `widened`, `group_by` `observer`, used when the option is not given.
+- `exclude_species`: species fetched and counted, then dropped from `labels.csv` (kept in
+  `metadata.csv` with `skip_reason = excluded_species`). Default: *Scylla paramamosain*
+  (no Philippine photos, so its presence in the Philippines is uncertain).
+- `max_photos_per_group` (default 5) and `group_cap_seed`: at most this many photos per
+  `crab_id` group within each genus go into `labels.csv`, chosen with a fixed seed per group
+  (within the genus, so an observer of several genera never costs a genus a group).
+  `metadata.csv` keeps every photo and marks the others `group_cap_dropped`.
+  `--max-photos-per-group` overrides it.
+
+Photos and groups per genus at each stage (fetched, after `exclude_species`, after the
+image checks, after the group cap) are printed and written to `stage_counts.csv`.
 
 ### Quality grade
 
@@ -102,7 +118,9 @@ python -m tools.dataset_builder --countries PH
 Images go to `data/external/<source>/<species>/`, each is checked to be a valid image,
 near-duplicates are removed (perceptual hash), and the kept rows are written to
 `data/labels.csv` (an existing file is kept unless `--overwrite-labels`). Contact sheets of
-50 random images per species are written to `data/external/review/` for a visual check.
+50 random images from `labels.csv` are written to `data/external/review/` for a visual check:
+`<genus>.jpg` per genus and `<genus>/<species>.jpg` per species within each genus
+(`genus_only.jpg` for photos identified only to genus).
 Downloads are logged in `downloads.jsonl`, so a rerun skips what is already on disk.
 
 ## Licenses and duplicates

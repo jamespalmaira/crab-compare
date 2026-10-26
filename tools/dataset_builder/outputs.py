@@ -8,7 +8,7 @@ from . import grouping
 from .records import FIELDS, taxon_label
 
 LABEL_COLUMNS = ("image_path", "crab_id", "genus", "species", "sex", "disease", "maturity", "source",
-                 "id_rank", "quality_grade", "review_flag", "license",
+                 "country", "id_rank", "quality_grade", "review_flag", "license",
                  "observer_id", "observation_id", "sex_source", "maturity_source")
 ATTRIBUTES = ("sex", "maturity")
 
@@ -56,8 +56,9 @@ def counts_table(records, species, thresholds, capped=(), near_dup_done=True, op
             "skipped_duplicate": _skip_count(mine, "duplicate_"),
             "skipped_near_duplicate": _skip_count(mine, "near_duplicate") if near_dup_done else "",
             "skipped_cap": _skip_count(mine, "cap"),
+            "skipped_excluded": _skip_count(mine, "excluded_species"),
             "skipped_other": sum(1 for r in mine if r["skipped"] and not r["skip_reason"].startswith(
-                ("license_", "duplicate_", "near_duplicate", "cap"))),
+                ("license_", "duplicate_", "near_duplicate", "cap", "excluded_species"))),
             "cap_hit": (name in capped) if name != "ALL" else bool(capped),
             "top_source": top, "top_source_share": share, "dominated": dominated,
             "trainable": g_obs >= th["min_species_groups"] if name != "ALL" else "",
@@ -94,6 +95,7 @@ def genus_table(records, taxa_list, thresholds, capped=()):
             by_species.setdefault(taxon_label(r), []).append(r)
         rows.append({
             "genus": name, "optional": optional, "photos": len(kept),
+            "photos_in_labels": sum(1 for r in kept if not r["group_cap_dropped"]),
             "groups_observer": g_obs, "groups_observation": _groups(kept, "observation"),
             "photos_genus_only": sum(1 for r in kept if r["id_rank"] == "genus"),
             "photos_needs_id_flagged": sum(1 for r in kept if r["review_flag"] == "genus_needs_id"),
@@ -114,7 +116,8 @@ def genus_table(records, taxa_list, thresholds, capped=()):
     return pd.DataFrame(rows)
 
 
-GENUS_COLUMNS = ["genus", "optional", "photos", "groups_observer", "groups_observation", "photos_genus_only",
+GENUS_COLUMNS = ["genus", "optional", "photos", "photos_in_labels", "groups_observer", "groups_observation",
+                 "photos_genus_only",
                  "photos_needs_id_flagged", "n_species", "top_source", "top_source_share", "dominated", "trainable"]
 
 
@@ -206,9 +209,38 @@ def warnings_list(counts, attr_table, taxa, thresholds, genus_counts=None):
     return out
 
 
+def in_labels(r, include_optional=False):
+    """True if a record goes into labels.csv: kept, not dropped by the group cap, not optional."""
+    return not r["skipped"] and not r["group_cap_dropped"] and (include_optional or not r["optional"])
+
+
+def stage_counts(records, stage, include_optional=False, after_cap=False):
+    """Per-genus photos and observer-level groups at one stage of the build (rows for stage_counts.csv)."""
+    kept = [r for r in records if (in_labels(r, include_optional) if after_cap
+                                   else not r["skipped"] and (include_optional or not r["optional"]))]
+    rows = []
+    for genus in sorted({r["genus"] for r in kept}) + ["ALL"]:
+        mine = [r for r in kept if genus == "ALL" or r["genus"] == genus]
+        rows.append({"stage": stage, "genus": genus, "photos": len(mine), "groups_observer": _groups(mine, "observer")})
+    return rows
+
+
+def format_stages(rows):
+    """Photos/groups per genus, one column per stage, in the order the stages ran."""
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return "(no records)"
+    df["cell"] = df["photos"].astype(str) + "/" + df["groups_observer"].astype(str)
+    order = list(dict.fromkeys(df["stage"]))
+    table = df.pivot(index="genus", columns="stage", values="cell").reindex(columns=order).fillna("0/0")
+    table = table.reindex([g for g in table.index if g != "ALL"] + ["ALL"])
+    return "photos/observer groups per genus at each stage\n" + table.to_string()
+
+
 def write_labels(records, path, include_optional=False):
-    """Kept photos in the bench's format. Optional candidates are left out unless include_optional."""
-    kept = frame([r for r in records if not r["skipped"] and (include_optional or not r["optional"])])
+    """Kept photos in the bench's format: optional candidates are left out unless include_optional,
+    and photos dropped by the group cap are left out."""
+    kept = frame([r for r in records if in_labels(r, include_optional)])
     kept["disease"] = ""  # no public source provides disease
     kept[list(LABEL_COLUMNS)].to_csv(path, index=False)
 
@@ -245,7 +277,7 @@ def write_attribution(records, imports, path, run_info):
 
 MAIN_COLUMNS = ["species", "optional", "photos", "groups_observer", "groups_observation", "groups_file_id", "sex_labeled",
                 "maturity_labeled", "skipped_license", "skipped_duplicate", "skipped_near_duplicate", "skipped_cap",
-                "skipped_other", "cap_hit", "top_source", "top_source_share", "dominated", "trainable"]
+                "skipped_excluded", "skipped_other", "cap_hit", "top_source", "top_source_share", "dominated", "trainable"]
 
 
 def format_counts(counts):

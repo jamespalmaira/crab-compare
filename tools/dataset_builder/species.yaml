@@ -13,15 +13,19 @@
 #
 # optional: true marks a candidate that is fetched and counted, and reported
 # on its own line, but left out of the totals and of labels.csv unless the
-# builder runs with --include-optional.
+# builder runs with --include-optional. (No entry is optional now: Atergatis
+# was promoted to a fourth genus on 2026-10-26.)
+#
+# Species in config.yaml exclude_species are fetched and counted, then
+# dropped from labels.csv (kept in metadata.csv with skip_reason
+# excluded_species).
 
 genera:
   - name: Scylla
   - name: Portunus
   - name: Charybdis
   - name: Atergatis
-    optional: true
-    note: optional candidate, not one of the edible target genera
+    note: reported toxic look-alike, included for the safety angle; not an edible crab
 
 species:
   - name: Scylla serrata
@@ -40,5 +44,4 @@ species:
     genus: Charybdis
   - name: Atergatis floridus
     genus: Atergatis
-    optional: true
-    note: optional candidate (floral egg crab), not an edible target species
+    note: floral egg crab, a reported toxic look-alike of edible crabs; not an edible crab

@@ -9,6 +9,7 @@ See tools/dataset_builder/README.md.
 import argparse
 import json
 import logging
+import random
 import re
 import sys
 from collections import Counter
@@ -38,8 +39,9 @@ def parse_args(argv=None):
     p.add_argument("--config", default=TOOL / "config.yaml", type=Path)
     p.add_argument("--species-file", default=TOOL / "species.yaml", type=Path)
     p.add_argument("--dry-run", action="store_true", help="fetch metadata only; download and write no images")
-    p.add_argument("--countries", default="default",
-                   help="'default' (Philippines), 'widened' (config list), or ISO codes such as PH,ID,MY")
+    p.add_argument("--countries", default=None,
+                   help="'default' (Philippines), 'widened' (config list), or ISO codes such as PH,ID,MY "
+                        "(default: defaults.countries in the config)")
     p.add_argument("--quality-grade", default=None,
                    help="iNaturalist quality grade(s): research (default), needs_id, casual, comma list, or any")
     p.add_argument("--include-genus-needs-id", action="store_true", default=None,
@@ -47,9 +49,12 @@ def parse_args(argv=None):
                         "(default: inaturalist.genus_needs_id in the config)")
     p.add_argument("--include-optional", action="store_true",
                    help="write optional candidates (optional: true in species.yaml) to labels.csv")
-    p.add_argument("--group-by", choices=grouping.LEVELS, default="observer",
-                   help="crab_id grouping key: observer (default, strictest), observation, file_id")
+    p.add_argument("--group-by", choices=grouping.LEVELS, default=None,
+                   help="crab_id grouping key: observer (strictest), observation, file_id "
+                        "(default: defaults.group_by in the config)")
     p.add_argument("--max-per-species", type=int, default=None, help="cap on kept photos per species")
+    p.add_argument("--max-photos-per-group", type=int, default=None,
+                   help="photos per crab_id group in labels.csv (default: max_photos_per_group in the config; 0 = no cap)")
     p.add_argument("--sources", default=",".join(API_SOURCES), help="API sources to query: inaturalist,gbif, or none")
     p.add_argument("--imports", nargs="*", type=Path, default=None,
                    help="manual-import YAML files (default: tools/dataset_builder/imports/*.yaml)")
@@ -246,6 +251,65 @@ def apply_cap(records, limit, priority):
     return capped
 
 
+def exclude_species(records, names):
+    """Mark records of excluded species skipped (excluded_species). Returns how many were marked."""
+    wanted = {n.strip().lower() for n in names or []}
+    n = 0
+    for r in records:
+        if not r["skipped"] and r["species"].lower() in wanted:
+            skip(r, "excluded_species")
+            n += 1
+    return n
+
+
+def apply_group_cap(records, max_n, seed):
+    """Keep at most max_n photos per crab_id group within each genus in labels.csv
+    (group_cap_dropped marks the rest).
+
+    Capping within the genus means an observer who photographed several genera keeps up to
+    max_n photos in each, so no genus loses a group to the cap. The choice is seeded per
+    group, so it does not depend on record order. Returns photos dropped.
+    """
+    if not max_n:
+        return 0
+    groups = {}
+    for r in records:
+        r["group_cap_dropped"] = False
+        if not r["skipped"]:
+            groups.setdefault((r["crab_id"], r["genus"]), []).append(r)
+    dropped = 0
+    for (cid, genus), recs in groups.items():
+        if len(recs) <= max_n:
+            continue
+        recs = sorted(recs, key=lambda r: r["photo_id"])
+        keep = set(random.Random(f"{seed}:{cid}:{genus}").sample(range(len(recs)), max_n))
+        for i, r in enumerate(recs):
+            if i not in keep:
+                r["group_cap_dropped"] = True
+                dropped += 1
+    return dropped
+
+
+def write_contact_sheets(records, data_dir, rc, include_optional=False):
+    """Random samples of the photos in labels.csv: review/<genus>.jpg and review/<genus>/<species>.jpg
+    (genus_only.jpg for photos identified only to genus). Returns the sheets written."""
+    review = data_dir / "external" / "review"
+    final = [r for r in records if outputs.in_labels(r, include_optional)]
+    written = []
+    for genus in sorted({r["genus"] for r in final}):
+        mine = [r for r in final if r["genus"] == genus]
+        sheets = [(review / f"{slug(genus)}.jpg", mine)]
+        for label in sorted({r["species"] or "genus_only" for r in mine}):
+            subset = [r for r in mine if (r["species"] or "genus_only") == label]
+            sheets.append((review / slug(genus) / f"{slug(label)}.jpg", subset))
+        for out, subset in sheets:
+            if contact_sheet([data_dir / r["image_path"] for r in subset], out, rc["thumb_size"], rc["columns"],
+                             rc["per_species"], rc["seed"]):
+                written.append(out)
+    log.info("contact sheets: %d written to %s", len(written), review)
+    return written
+
+
 def main(argv=None, client=None):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = parse_args(argv)
@@ -253,6 +317,12 @@ def main(argv=None, client=None):
         cfg = yaml.safe_load(f)
     taxa_list = load_species(args.species_file)
     species = [s["name"] for s in taxa_list["species"]]
+    defaults = cfg.get("defaults") or {}
+    args.countries = args.countries or defaults.get("countries", "default")
+    args.group_by = args.group_by or defaults.get("group_by", "observer")
+    max_per_group = (args.max_photos_per_group if args.max_photos_per_group is not None
+                     else cfg.get("max_photos_per_group") or 0)
+    excluded = list(cfg.get("exclude_species") or [])
     countries = countries_from_arg(args.countries, cfg)
     sources = [s for s in args.sources.split(",") if s in API_SOURCES]
     quality_grade = args.quality_grade or cfg["inaturalist"]["quality_grade"]
@@ -298,8 +368,12 @@ def main(argv=None, client=None):
             _, reason = licenses.check(r["license_raw"], allow)
             if reason:
                 skip(r, reason)
-    capped |= apply_cap(records, args.max_per_species, priority)
     grouping.assign(records, args.group_by)
+    stages = outputs.stage_counts(records, "fetched (licensed, deduplicated)", args.include_optional)
+    n_excluded = exclude_species(records, excluded)
+    stages += outputs.stage_counts(records, "after exclude_species", args.include_optional)
+    log.info("exclude_species %s: %d photos dropped", excluded or "none", n_excluded)
+    capped |= apply_cap(records, args.max_per_species, priority)
     outputs.write_metadata(records, run_dir / "metadata.csv")  # before any download, so progress is on disk
 
     if not args.dry_run:
@@ -330,6 +404,13 @@ def main(argv=None, client=None):
                                 "kept_source", "kept_species", "distance"]).to_csv(run_dir / "near_duplicates.csv",
                                                                                     index=False)
 
+    stages += outputs.stage_counts(records, "after image checks" + (" (dry run: none)" if args.dry_run else ""),
+                                   args.include_optional)
+    n_cap = apply_group_cap(records, max_per_group, cfg.get("group_cap_seed", 0))
+    stages += outputs.stage_counts(records, f"after group cap ({max_per_group or 'none'} per group)",
+                                   args.include_optional, after_cap=True)
+    pd.DataFrame(stages).to_csv(run_dir / "stage_counts.csv", index=False)
+
     th = cfg["thresholds"]
     optional_species = {s["name"] for s in taxa_list["species"] if s["optional"]}
     counts = outputs.counts_table(records, species, th, capped, near_dup_done=hashed > 0, optional=optional_species)
@@ -343,6 +424,9 @@ def main(argv=None, client=None):
                 "genus_needs_id": include_needs_id,
                 "genus_needs_id_identifications": cfg["inaturalist"].get("genus_needs_id_identifications"),
                 "include_optional": args.include_optional,
+                "exclude_species": excluded, "excluded_photos": n_excluded,
+                "max_photos_per_group": max_per_group, "group_cap_seed": cfg.get("group_cap_seed", 0),
+                "group_cap_dropped_photos": n_cap, "stages": stages,
                 "optional_taxa": sorted({g["name"] for g in taxa_list["genera"] if g["optional"]} | optional_species),
                 "group_by": args.group_by, "max_per_species": args.max_per_species,
                 "imports": [s["spec_file"] for s in specs], "license_allowlist": allow,
@@ -367,11 +451,7 @@ def main(argv=None, client=None):
                         labels_csv, run_dir / "labels.csv")
         else:
             outputs.write_labels(records, labels_csv, args.include_optional)
-        rc = cfg["review"]
-        for label in sorted({taxon_label(r) for r in records if not r["skipped"]}):
-            paths = [data_dir / r["image_path"] for r in records if not r["skipped"] and taxon_label(r) == label]
-            contact_sheet(paths, data_dir / "external" / "review" / f"{slug(label)}.jpg", rc["thumb_size"],
-                          rc["columns"], rc["per_species"], rc["seed"])
+        write_contact_sheets(records, data_dir, cfg["review"], args.include_optional)
 
     report = render_report(run_info, taxa, places, counts, attrs, verdicts, warns, genus_counts)
     (run_dir / "counts.txt").write_text(report, encoding="utf-8")
@@ -400,8 +480,13 @@ def render_report(run_info, taxa, places, counts, attrs, verdicts, warns, genus_
                  "gbif_taxon_key", "gbif_name"]].to_string(index=False), ""]
     if len(places):
         out += ["--- iNaturalist places ---", places.to_string(index=False), ""]
+    if run_info.get("stages"):
+        out += [f"--- Exclusions and caps (exclude_species: {', '.join(run_info['exclude_species']) or 'none'}, "
+                f"{run_info['excluded_photos']} photos; max_photos_per_group: {run_info['max_photos_per_group'] or 'none'}"
+                f", seed {run_info['group_cap_seed']}, {run_info['group_cap_dropped_photos']} photos left out "
+                "of labels.csv) ---", outputs.format_stages(run_info["stages"]), ""]
     if genus_counts is not None and len(genus_counts):
-        out += ["--- Counts per genus: MAIN TASK (groups are over kept photos) ---",
+        out += ["--- Counts per genus: MAIN TASK (groups are over kept photos; photos_in_labels after the group cap) ---",
                 outputs.format_genus_counts(genus_counts), ""]
     out += ["--- Counts per species: secondary, exploratory (genus-only photos are not in any species) ---",
             outputs.format_counts(counts), "",

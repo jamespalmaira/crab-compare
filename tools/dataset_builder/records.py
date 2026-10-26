@@ -10,7 +10,7 @@ FIELDS = (
     "date", "country", "latitude", "longitude", "location_note",
     "license", "license_raw", "attribution", "width", "height",
     "sex", "sex_source", "sex_raw", "maturity", "maturity_source", "maturity_raw",
-    "skipped", "skip_reason", "crab_id", "crab_id_field", "phash",
+    "skipped", "skip_reason", "crab_id", "crab_id_field", "phash", "group_cap_dropped",
 )
 
 
@@ -20,6 +20,7 @@ def new_record(**values):
     rec = dict.fromkeys(FIELDS, "")
     rec["skipped"] = False
     rec["optional"] = False
+    rec["group_cap_dropped"] = False  # kept photo left out of labels.csv by max_photos_per_group
     unknown = set(values) - set(FIELDS)
     if unknown:
         raise KeyError(f"unknown record fields: {sorted(unknown)}")

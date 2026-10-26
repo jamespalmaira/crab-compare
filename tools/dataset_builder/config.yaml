@@ -6,6 +6,26 @@
 contact_email_env: CRAB_DATASET_CONTACT_EMAIL
 user_agent: "crab-dataset-builder/0.1 (dissertation research; public-data reads)"
 
+# Settings used when the matching command-line option is not given
+# (project decisions of 2026-10-26, see handoff.md).
+defaults:
+  countries: widened        # the Philippines alone supports only one trainable genus
+  group_by: observer        # crab_id = observer (strictest grouping)
+
+# Species dropped from labels.csv after fetching. They stay in metadata.csv with
+# skip_reason excluded_species, and the counts before and after are reported.
+# Scylla paramamosain: no Philippine photos, so its presence in the Philippines
+# is uncertain (to confirm with a taxonomist).
+exclude_species: [Scylla paramamosain]
+
+# At most this many photos per crab_id group (observer) within each genus go into
+# labels.csv, chosen with a fixed seed, so a few prolific photographers do not
+# dominate. Capping within the genus keeps every genus's group count unchanged.
+# metadata.csv keeps every photo (group_cap_dropped marks the ones left out).
+# 0 or null = no cap.
+max_photos_per_group: 5
+group_cap_seed: 0
+
 countries:
   default: [PH]
   # Neighbouring Indo-Pacific countries, for when Philippine counts are thin.

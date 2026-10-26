@@ -571,14 +571,15 @@ class GenusTests(unittest.TestCase):
         taxa = build.load_species(build.TOOL / "species.yaml")
         genera = {g["name"]: g for g in taxa["genera"]}
         self.assertEqual(set(genera), {"Scylla", "Portunus", "Charybdis", "Atergatis"})
-        self.assertTrue(genera["Atergatis"]["optional"])
+        self.assertFalse(any(g["optional"] for g in genera.values()))  # Atergatis is a fourth genus now
+        self.assertIn("toxic look-alike", genera["Atergatis"]["note"])
         by_name = {s["name"]: s for s in taxa["species"]}
         self.assertIn("Scylla tranquebarica", by_name)
-        self.assertTrue(by_name["Atergatis floridus"]["optional"])
+        self.assertIn("Atergatis floridus", by_name)
         for s in taxa["species"]:
             self.assertIn(s["genus"], genera)
             self.assertEqual(s["name"].split()[0], s["genus"])
-            self.assertEqual(s["optional"], s["genus"] == "Atergatis")
+            self.assertFalse(s["optional"])
 
     def test_plain_species_list_still_loads(self):
         path = self.tmp / "s.yaml"
@@ -616,7 +617,7 @@ class GenusTests(unittest.TestCase):
         obs, occs = genus_world()
         client = FakeClient(routes or genus_routes(obs, occs))
         with redirect_stdout(io.StringIO()) as out:
-            rc = build.main(["--dry-run", "--species-file", str(species), "--data-dir", str(self.tmp / "data"),
+            rc = build.main(["--dry-run", "--countries", "default", "--species-file", str(species), "--data-dir", str(self.tmp / "data"),
                              "--imports", *extra], client=client)
         self.assertEqual(rc, 0)
         run = self.tmp / "data" / "external" / "runs" / "default"
@@ -712,6 +713,84 @@ class GenusTests(unittest.TestCase):
         self.assertEqual(t.loc["ALL", "photos"], 5)
 
 
+class ExclusionAndCapTests(unittest.TestCase):
+    """exclude_species, max_photos_per_group and the per-stage counts."""
+
+    def records(self):
+        recs = []
+        for obs in range(3):  # Scylla serrata: observer o0 has 8 photos, o1 3, o2 1
+            for k in range((8, 3, 1)[obs]):
+                recs.append(rec(genus="Scylla", species="Scylla serrata", photo_id=f"s{obs}:{k}",
+                                observer_id=f"o{obs}", observation_id=f"ob{obs}:{k}"))
+        for k in range(4):  # Scylla paramamosain: excluded
+            recs.append(rec(genus="Scylla", species="Scylla paramamosain", photo_id=f"p{k}", observer_id=f"q{k}"))
+        recs.append(rec(genus="Scylla", species="", id_rank="genus", photo_id="g", observer_id="o9"))
+        grouping.assign(recs, "observer")
+        return recs
+
+    def test_excluded_species_are_skipped_and_counted(self):
+        recs = self.records()
+        before = {r["genus"]: (r["photos"], r["groups_observer"]) for r in outputs.stage_counts(recs, "a")}
+        self.assertEqual(build.exclude_species(recs, ["scylla PARAMAMOSAIN"]), 4)
+        after = {r["genus"]: (r["photos"], r["groups_observer"]) for r in outputs.stage_counts(recs, "b")}
+        self.assertEqual((before["Scylla"], after["Scylla"]), ((17, 8), (13, 4)))
+        self.assertTrue(all(r["skip_reason"] == "excluded_species" for r in recs if r["species"] == "Scylla paramamosain"))
+        self.assertFalse(any(r["skipped"] for r in recs if r["species"] != "Scylla paramamosain"))  # genus-only kept
+
+    def test_group_cap_is_seeded_and_only_affects_labels(self):
+        recs = self.records()
+        self.assertEqual(build.apply_group_cap(recs, 5, seed=0), 3)  # o0 has 8 -> 5
+        kept_o0 = sorted(r["photo_id"] for r in recs if r["observer_id"] == "o0" and not r["group_cap_dropped"])
+        self.assertEqual(len(kept_o0), 5)
+        shuffled = list(reversed(self.records()))  # same choice whatever the record order
+        build.apply_group_cap(shuffled, 5, seed=0)
+        self.assertEqual(sorted(r["photo_id"] for r in shuffled if r["observer_id"] == "o0" and not r["group_cap_dropped"]),
+                         kept_o0)
+        other = self.records()
+        build.apply_group_cap(other, 5, seed=1)
+        self.assertNotEqual(sorted(r["photo_id"] for r in other if r["observer_id"] == "o0" and not r["group_cap_dropped"]),
+                            kept_o0)
+        self.assertFalse(any(r["skipped"] for r in recs))  # metadata keeps every photo
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            for r in recs:
+                r["image_path"] = f"{r['photo_id']}.jpg"
+            outputs.write_labels(recs, tmp / "labels.csv")
+            labels_df = pd.read_csv(tmp / "labels.csv", dtype=str, keep_default_na=False)
+            self.assertEqual(len(labels_df), 17 - 3)
+            self.assertLessEqual(labels_df["crab_id"].value_counts().max(), 5)
+            self.assertIn("country", labels_df.columns)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(build.apply_group_cap(self.records(), 0, seed=0), 0)  # 0 = no cap
+
+    def test_group_cap_is_per_genus_so_no_genus_loses_a_group(self):
+        recs = [rec(genus="Portunus", species="Portunus pelagicus", photo_id=f"p{k}", observer_id="o1") for k in range(5)]
+        recs += [rec(genus="Charybdis", species="Charybdis feriata", photo_id=f"c{k}", observer_id="o1") for k in range(2)]
+        grouping.assign(recs, "observer")
+        self.assertEqual(build.apply_group_cap(recs, 5, seed=0), 0)  # 5 + 2 photos, but within each genus <= 5
+        self.assertEqual(sum(not r["group_cap_dropped"] for r in recs if r["genus"] == "Charybdis"), 2)
+
+    def test_stage_table(self):
+        recs = self.records()
+        rows = outputs.stage_counts(recs, "fetched")
+        build.exclude_species(recs, ["Scylla paramamosain"])
+        rows += outputs.stage_counts(recs, "excluded")
+        build.apply_group_cap(recs, 2, seed=0)
+        rows += outputs.stage_counts(recs, "capped", after_cap=True)
+        text = outputs.format_stages(rows)
+        self.assertIn("Scylla", text)
+        caps = {r["genus"]: r["photos"] for r in rows if r["stage"] == "capped"}
+        self.assertEqual(caps["Scylla"], 2 + 2 + 1 + 1)  # o0 8->2, o1 3->2, o2 1, genus-only 1
+
+    def test_config_defaults_are_used(self):
+        self.assertEqual(CFG["defaults"], {"countries": "widened", "group_by": "observer"})
+        self.assertEqual(CFG["exclude_species"], ["Scylla paramamosain"])
+        self.assertEqual(CFG["max_photos_per_group"], 5)
+        self.assertFalse(CFG["inaturalist"]["genus_needs_id"])
+        self.assertEqual(CFG["inaturalist"]["quality_grade"], "research")
+
+
 class DryRunTests(unittest.TestCase):
     """End to end with mocked APIs: dry run writes metadata and counts but no image files."""
 
@@ -737,7 +816,7 @@ class DryRunTests(unittest.TestCase):
         client = FakeClient(default_routes(obs, occs))
         out = io.StringIO()
         with redirect_stdout(out):
-            rc = build.main(["--dry-run", "--species-file", str(species), "--data-dir", str(self.tmp / "data"),
+            rc = build.main(["--dry-run", "--countries", "default", "--species-file", str(species), "--data-dir", str(self.tmp / "data"),
                              "--imports"], client=client)
         self.assertEqual(rc, 0)
         run = self.tmp / "data" / "external" / "runs" / "default"
@@ -784,7 +863,8 @@ class DryRunTests(unittest.TestCase):
         client = FakeClient(default_routes(obs, occs))
         client.get = get
         with redirect_stdout(io.StringIO()):
-            rc = build.main(["--species-file", str(species), "--data-dir", str(self.tmp / "data"), "--imports"],
+            rc = build.main(["--countries", "default", "--max-photos-per-group", "0", "--species-file", str(species),
+                             "--data-dir", str(self.tmp / "data"), "--imports"],
                             client=client)
         self.assertEqual(rc, 0)
         data = self.tmp / "data"
@@ -795,7 +875,8 @@ class DryRunTests(unittest.TestCase):
         reasons = dict(zip(meta["photo_id"], meta["skip_reason"]))
         self.assertEqual(reasons["inaturalist:photo:12"], "near_duplicate")
         self.assertEqual(reasons["gbif:100:1"], "invalid_image")
-        self.assertTrue((data / "external" / "review" / "scylla_serrata.jpg").exists())
+        self.assertTrue((data / "external" / "review" / "scylla.jpg").exists())  # per genus
+        self.assertTrue((data / "external" / "review" / "scylla" / "scylla_serrata.jpg").exists())  # per species
         near = pd.read_csv(data / "external" / "runs" / "default" / "near_duplicates.csv")
         self.assertEqual(near["removed_photo_id"].tolist(), ["inaturalist:photo:12"])
 
