@@ -106,7 +106,8 @@ def collect_api(client, cfg, cache, taxa, countries, sources, quality_grade, lim
         for code in countries:
             pid, label = inat.resolve_place(client, inat_base, cfg["countries"]["names"][code])
             place_ids[code] = pid
-            places.append({"country": code, "name": cfg["countries"]["names"][code],
+            names = cfg["countries"]["names"][code]
+            places.append({"country": code, "name": names if isinstance(names, str) else " / ".join(names),
                            "inat_place_id": pid or "", "inat_place": label if pid else "", "note": "" if pid else label})
         terms = inat.controlled_terms(client, inat_base)
         for key in ("sex", "maturity"):

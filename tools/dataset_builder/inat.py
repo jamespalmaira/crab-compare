@@ -39,17 +39,23 @@ def resolve_taxon(client, base, name):
     return out
 
 
-def resolve_place(client, base, country_name):
-    """(place_id, display name) of a country-level place, or (None, reason)."""
-    data = client.get_json(f"{base}/places/autocomplete", {"q": country_name, "per_page": 20})
-    countries = [p for p in data.get("results", [])
-                 if p.get("admin_level") == 0 or p.get("place_type") == 12]
-    target = country_name.strip().lower()
-    exact = [p for p in countries if target in (str(p.get("name", "")).lower(), str(p.get("display_name", "")).lower())]
-    hits = exact or countries
-    if not hits:
-        return None, f"no country-level place named {country_name!r}"
-    return hits[0]["id"], hits[0].get("display_name") or hits[0].get("name")
+def resolve_place(client, base, country_names):
+    """(place_id, display name) of a country-level place, or (None, reason).
+
+    `country_names` is one name or a list tried in order (iNaturalist may use another name).
+    """
+    names = [country_names] if isinstance(country_names, str) else list(country_names)
+    for country_name in names:
+        data = client.get_json(f"{base}/places/autocomplete", {"q": country_name, "per_page": 20})
+        countries = [p for p in data.get("results", [])
+                     if p.get("admin_level") == 0 or p.get("place_type") == 12]
+        target = country_name.strip().lower()
+        exact = [p for p in countries
+                 if target in (str(p.get("name", "")).lower(), str(p.get("display_name", "")).lower())]
+        hits = exact or countries
+        if hits:
+            return hits[0]["id"], hits[0].get("display_name") or hits[0].get("name")
+    return None, f"no country-level place named {' or '.join(repr(n) for n in names)}"
 
 
 def controlled_terms(client, base):

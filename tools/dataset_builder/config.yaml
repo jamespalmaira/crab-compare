@@ -10,8 +10,8 @@ countries:
   default: [PH]
   # Neighbouring Indo-Pacific countries, for when Philippine counts are thin.
   widened: [PH, ID, MY, BN, SG, TH, VN, KH, TW, TL, PG]
-  # ISO 3166-1 alpha-2 code -> name used to look up the iNaturalist place.
-  # GBIF is queried by the code itself.
+  # ISO 3166-1 alpha-2 code -> name used to look up the iNaturalist place, or a
+  # list of names tried in order. GBIF is queried by the code itself.
   names:
     PH: Philippines
     ID: Indonesia
@@ -22,7 +22,7 @@ countries:
     VN: Vietnam
     KH: Cambodia
     TW: Taiwan
-    TL: Timor-Leste
+    TL: [Timor-Leste, East Timor]   # iNaturalist names it East Timor
     PG: Papua New Guinea
 
 inaturalist:

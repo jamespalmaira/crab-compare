@@ -392,6 +392,18 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(gbif.match_species(client, GBIF, "Scylla fakeus")["gbif_status"], "higher_rank")
         self.assertEqual(inat.resolve_place(client, INAT, "Philippines"), (6888, "Philippines"))
 
+    def test_place_alternative_names(self):
+        def places(p):
+            if p["q"] == "East Timor":
+                return {"results": [{"id": 10314, "name": "East Timor", "display_name": "East Timor", "admin_level": 0}]}
+            return {"results": [{"id": 5, "name": "Timor Islands", "place_type": 13}]}
+        client = FakeClient({"/places/autocomplete": places})
+        self.assertEqual(inat.resolve_place(client, INAT, ["Timor-Leste", "East Timor"]), (10314, "East Timor"))
+        pid, reason = inat.resolve_place(client, INAT, "Timor-Leste")
+        self.assertIsNone(pid)
+        self.assertIn("Timor-Leste", reason)
+        self.assertEqual(CFG["countries"]["names"]["TL"], ["Timor-Leste", "East Timor"])
+
     def test_inat_synonym(self):
         client = FakeClient({"/taxa": {"results": [{"id": 5, "name": "Portunus armatus", "rank": "species",
                                                     "matched_term": "Portunus pelagicus"}]}})
