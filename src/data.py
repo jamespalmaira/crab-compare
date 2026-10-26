@@ -2,7 +2,8 @@
 
 Splits are made over crab_id, never over images, so every photo of one crab
 lands in exactly one of train / val / test. A split is saved to disk the first
-time it is made and reused by every model afterwards.
+time it is made and reused by every model afterwards. Each attribute uses only
+the rows labeled for it, and its split is made on those rows.
 """
 import json
 import logging
@@ -22,7 +23,7 @@ from torch.utils.data import DataLoader, Dataset
 log = logging.getLogger(__name__)
 
 ATTRIBUTES = ("species", "sex", "disease", "maturity")
-REQUIRED_COLUMNS = ("image_path", "crab_id") + ATTRIBUTES
+REQUIRED_COLUMNS = ("image_path", "crab_id")  # attribute columns may be missing or blank
 SPLIT_SETS = ("train", "val", "test")
 
 _INTERPOLATION = {"bilinear": cv2.INTER_LINEAR, "bicubic": cv2.INTER_CUBIC, "nearest": cv2.INTER_NEAREST}
@@ -35,13 +36,26 @@ class SplitError(RuntimeError):
 # ---------------------------------------------------------------- labels
 
 def load_labels(csv_path):
+    """labels.csv with image_path and crab_id; attribute and source columns are optional.
+
+    A missing attribute column is treated as all blank. crab_id is a grouping
+    key (an individual, observer, observation or filename ID): all rows with
+    the same crab_id always stay in the same split set.
+    """
     df = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
     missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
     if missing:
-        raise ValueError(f"{csv_path} is missing columns: {missing}")
-    df = df[list(REQUIRED_COLUMNS)].apply(lambda col: col.str.strip())
+        raise ValueError(f"{csv_path} is missing required columns: {missing}")
+    for attr in ATTRIBUTES:
+        if attr not in df.columns:
+            log.info("%s has no %s column; treating it as unlabeled", csv_path, attr)
+            df[attr] = ""
+    columns = list(REQUIRED_COLUMNS) + list(ATTRIBUTES) + (["source"] if "source" in df.columns else [])
+    df = df[columns].apply(lambda col: col.str.strip())
     if (df["crab_id"] == "").any() or (df["image_path"] == "").any():
         raise ValueError(f"{csv_path} has rows with an empty crab_id or image_path")
+    if "source" in df.columns:
+        df["source"] = df["source"].replace("", "unknown")
     return df
 
 
@@ -52,8 +66,39 @@ def attribute_rows(df, attribute):
     rows = df[df[attribute] != ""]
     skipped = len(df) - len(rows)
     if skipped:
-        log.warning("%s: skipping %d image(s) with no label", attribute, skipped)
+        log.info("%s: leaving out %d of %d image(s) with no label", attribute, skipped, len(df))
     return rows.reset_index(drop=True)
+
+
+def attribute_usage(rows, attribute, min_groups_per_class):
+    """What one attribute would train on, and why it must be skipped (None if usable)."""
+    groups = rows.groupby(attribute)["crab_id"].nunique().sort_index()
+    images = rows[attribute].value_counts().sort_index()
+    usage = {
+        "attribute": attribute, "n_images": int(len(rows)), "n_groups": int(rows["crab_id"].nunique()),
+        "n_classes": int(len(groups)), "groups_per_class": {k: int(v) for k, v in groups.items()},
+        "images_per_class": {k: int(v) for k, v in images.items()},
+        "min_groups_per_class": int(min_groups_per_class), "skip_reason": None,
+    }
+    if len(groups) < 2:
+        usage["skip_reason"] = f"{len(groups)} labeled class(es); at least 2 are needed"
+    else:
+        low = {k: int(v) for k, v in groups.items() if v < min_groups_per_class}
+        if low:
+            usage["skip_reason"] = (f"class(es) below data.min_groups_per_class={min_groups_per_class} "
+                                    f"groups (crab_id): {low}")
+    return usage
+
+
+def prepare_attribute(df, attribute, min_groups_per_class):
+    """Filter to labeled rows, log what is used, and return (rows, usage)."""
+    rows = attribute_rows(df, attribute)
+    usage = attribute_usage(rows, attribute, min_groups_per_class)
+    log.info("%s: %d images, %d groups (crab_id), %d classes; groups per class %s", attribute,
+             usage["n_images"], usage["n_groups"], usage["n_classes"], usage["groups_per_class"])
+    if usage["skip_reason"]:
+        log.warning("Skipping attribute %s: %s", attribute, usage["skip_reason"])
+    return rows, usage
 
 
 def crab_labels(rows, attribute):

@@ -13,6 +13,10 @@ data:
   labels_csv: data/labels.csv
   attributes: [species, sex, disease, maturity]
   num_workers: 2
+  # Each attribute uses only the rows labeled for it. It is skipped (with a
+  # message) if it has fewer than 2 classes, or any class has fewer than this
+  # many distinct crab_id groups.
+  min_groups_per_class: 30
 
 split:
   strategy: holdout       # holdout (single 70/15/15 split) or kfold (crab-level CV)

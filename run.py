@@ -9,6 +9,7 @@ checkpoint per run under results/<run_name>/.
 """
 import argparse
 import gc
+import json
 import logging
 import sys
 import warnings
@@ -19,7 +20,7 @@ import torch
 
 from src.config import ConfigError, load_config
 from src.analyze import analyze
-from src.data import ATTRIBUTES, SPLIT_SETS, SplitError, attribute_rows, get_split, load_labels
+from src.data import ATTRIBUTES, SPLIT_SETS, SplitError, get_split, load_labels, prepare_attribute
 from src.select import write_ranking
 from src.evaluate import evaluate_run
 from src.report import write_report, write_tables
@@ -40,6 +41,7 @@ def parse_args(argv=None):
     ap.add_argument("--no-pretrained", action="store_true", help="random init instead of downloading weights")
     ap.add_argument("--num-workers", type=int, default=None, help="override data.num_workers")
     ap.add_argument("--folds", type=int, nargs="+", default=None, help="only these fold indices (k-fold)")
+    ap.add_argument("--min-groups-per-class", type=int, default=None, help="override data.min_groups_per_class")
     ap.add_argument("--splits-only", action="store_true", help="make/check the splits and stop")
     ap.add_argument("--analyze-only", action="store_true",
                     help="skip training; run statistics, Grad-CAM, ONNX and FLOPs on results/<run_name>/")
@@ -80,11 +82,38 @@ def apply_overrides(cfg, args):
         cfg["training"]["pretrained"] = False
     if args.num_workers is not None:
         cfg["data"]["num_workers"] = args.num_workers
+    if args.min_groups_per_class is not None:
+        cfg["data"]["min_groups_per_class"] = args.min_groups_per_class
     seeds = cfg["training"]["seeds"]
     if args.seeds is not None:
         if not 1 <= args.seeds <= len(seeds):
             raise ConfigError(f"--seeds {args.seeds}: config.yaml lists {len(seeds)} seeds {seeds}")
         cfg["training"]["seeds"] = seeds[:args.seeds]
+
+
+def save_attribute_usage(out_dir, usages):
+    """Record which attributes were used or skipped (merged with earlier runs into this folder)."""
+    path = Path(out_dir) / "attributes.json"
+    saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    saved.update(usages)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(saved, indent=1), encoding="utf-8")
+
+
+def select_attributes(cfg, df, attributes, out_dir):
+    """Labeled rows and the saved split for every usable attribute; skipped ones are logged."""
+    min_groups = cfg["data"].get("min_groups_per_class", 30)
+    splits, usages = {}, {}
+    for attr in attributes:
+        rows, usages[attr] = prepare_attribute(df, attr, min_groups)
+        if usages[attr]["skip_reason"]:
+            continue
+        splits[attr] = (rows, get_split(cfg, rows, attr))
+        summarise_split(splits[attr][1], rows)
+    save_attribute_usage(out_dir, usages)
+    if not splits:
+        raise ConfigError(f"No attribute has enough labels to train ({attributes}); see the skip messages above")
+    return splits
 
 
 def summarise_split(split, rows):
@@ -129,11 +158,7 @@ def main(argv=None):
             return 0
 
         df = load_labels(cfg["data"]["labels_csv"])
-        splits = {}
-        for attr in attributes:
-            rows = attribute_rows(df, attr)
-            splits[attr] = (rows, get_split(cfg, rows, attr))
-            summarise_split(splits[attr][1], rows)
+        splits = select_attributes(cfg, df, attributes, out_dir)
         if args.splits_only:
             return 0
 
@@ -145,8 +170,7 @@ def main(argv=None):
                  cfg["training"]["pretrained"], cfg["training"]["amp"])
 
         run_rows, class_rows = [], []
-        for attr in attributes:
-            rows, split = splits[attr]
+        for attr, (rows, split) in splits.items():
             folds = args.folds if args.folds is not None else range(len(split["folds"]))
             for arch in models:
                 for fold in folds:
