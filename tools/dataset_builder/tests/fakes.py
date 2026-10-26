@@ -95,7 +95,10 @@ def default_routes(observations=(), occurrences=()):
 
     def match(p):
         if p["name"] == "Scylla serrata":
-            return {"usageKey": 2225776, "speciesKey": 2225776, "canonicalName": "Scylla serrata", "rank": "SPECIES",
+            return {"usageKey": 2225776, "speciesKey": 2225776, "genusKey": 2225770, "canonicalName": "Scylla serrata",
+                    "rank": "SPECIES", "matchType": "EXACT", "synonym": False}
+        if p["name"] == "Scylla" and p.get("rank") == "GENUS":
+            return {"usageKey": 2225770, "genusKey": 2225770, "canonicalName": "Scylla", "rank": "GENUS",
                     "matchType": "EXACT", "synonym": False}
         return {"usageKey": 2225770, "canonicalName": "Scylla", "rank": "GENUS", "matchType": "HIGHERRANK"}
 
@@ -104,8 +107,12 @@ def default_routes(observations=(), occurrences=()):
                             {"id": 1, "name": "Philippines Sea", "admin_level": None}]}
 
     def obs(p):
-        page = [o for o in observations if o["id"] > p.get("id_above", 0)][: p["per_page"]]
-        return {"total_results": len(observations), "results": page}
+        # like the API: rank keeps only observations whose taxon has that rank; quality_grade filters too
+        match = [o for o in observations
+                 if (not p.get("rank") or o["taxon"]["rank"] == p["rank"])
+                 and (not p.get("quality_grade") or o["quality_grade"] in p["quality_grade"].split(","))]
+        page = [o for o in match if o["id"] > p.get("id_above", 0)][: p["per_page"]]
+        return {"total_results": len(match), "results": page}
 
     def occ(p):
         page = list(occurrences)[p["offset"]: p["offset"] + p["limit"]]

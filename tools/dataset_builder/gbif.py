@@ -11,24 +11,42 @@ INAT_OBS = re.compile(r"inaturalist\.org/observations/(\d+)")
 INAT_PHOTO = re.compile(r"inaturalist[^/]*/photos/(\d+)/")
 
 
-def match_species(client, base, name):
-    """{'gbif_usage_key', 'gbif_species_key', 'gbif_name', 'gbif_rank', 'gbif_match', 'gbif_status', 'gbif_note'}.
+RANKS = {"species": ("species", "subspecies"), "genus": ("genus",)}
+
+
+def id_rank(taxon_rank):
+    """'genus' for a record identified only to genus, 'species' for species or below, else ''."""
+    rank = str(taxon_rank or "").lower()
+    if rank == "genus":
+        return "genus"
+    if rank in ("species", "subspecies", "variety", "form"):
+        return "species"
+    return ""
+
+
+def match_species(client, base, name, rank="species"):
+    """{'gbif_usage_key', 'gbif_taxon_key', 'gbif_name', 'gbif_rank', 'gbif_match', 'gbif_status', 'gbif_note'}.
 
     Status: exact, fuzzy, synonym, higher_rank or not_found. Only exact, fuzzy and
-    synonym matches with a species key are collected.
+    synonym matches at `rank` (species or genus) are collected; gbif_taxon_key is the
+    accepted species or genus key used for the occurrence search.
     """
-    m = client.get_json(f"{base}/species/match", {"name": name, "kingdom": "Animalia", "strict": "true"})
-    out = {"gbif_usage_key": m.get("usageKey", ""), "gbif_species_key": "", "gbif_name": m.get("canonicalName", ""),
+    params = {"name": name, "kingdom": "Animalia", "strict": "true"}
+    if rank == "genus":
+        params["rank"] = "GENUS"
+    m = client.get_json(f"{base}/species/match", params)
+    out = {"gbif_usage_key": m.get("usageKey", ""), "gbif_taxon_key": "", "gbif_name": m.get("canonicalName", ""),
            "gbif_rank": str(m.get("rank", "")).lower(), "gbif_match": m.get("matchType", "NONE"),
            "gbif_status": "not_found", "gbif_note": ""}
     match = out["gbif_match"]
     if match == "NONE":
         out["gbif_note"] = m.get("note", "")
-    elif match == "HIGHERRANK" or out["gbif_rank"] not in ("species", "subspecies"):
+    elif match == "HIGHERRANK" or out["gbif_rank"] not in RANKS[rank]:
         out["gbif_status"] = "higher_rank"
         out["gbif_note"] = f"only {out['gbif_name']} ({out['gbif_rank']}) matched"
     else:
-        out["gbif_species_key"] = m.get("speciesKey") or m.get("usageKey")
+        accepted = m.get("speciesKey") if rank == "species" else m.get("genusKey")
+        out["gbif_taxon_key"] = accepted or m.get("usageKey")
         out["gbif_status"] = "synonym" if m.get("synonym") else match.lower()
         if m.get("synonym"):
             out["gbif_note"] = f"{name} is a synonym of {m.get('species', '')}"
@@ -86,8 +104,9 @@ def inat_observation_id(occ, inat_dataset_key):
     return ""
 
 
-def photo_records(occ, species, cfg):
-    """One record per still image of an occurrence. The image license is the media license."""
+def photo_records(occ, species, cfg, genus="", optional=False):
+    """One record per still image of an occurrence. The image license is the media license.
+    `species` is '' for a genus-level query."""
     maps = cfg["labels"]
     inat_obs = inat_observation_id(occ, cfg["gbif"]["inaturalist_dataset_key"])
     sex = labels.map_value(occ.get("sex"), maps["sex"])
@@ -100,7 +119,9 @@ def photo_records(occ, species, cfg):
         photo = INAT_PHOTO.search(url)
         credit = media.get("rightsHolder") or media.get("creator") or observer
         out.append(new_record(
-            source="gbif", species=species, photo_id=f"gbif:{occ['key']}:{i}", image_url=url,
+            source="gbif", genus=genus, species=species,
+            id_rank=id_rank(occ.get("taxonRank")) or ("species" if species else "genus"), optional=optional,
+            photo_id=f"gbif:{occ['key']}:{i}", image_url=url,
             observation_id=f"inaturalist:{inat_obs}" if inat_obs else f"gbif:{occ['key']}",
             observation_url=f"https://www.gbif.org/occurrence/{occ['key']}",
             observer_id=f"gbif:{observer.lower()}" if observer else "", observer_name=observer,

@@ -47,7 +47,7 @@ class SplitTests(unittest.TestCase):
     def all_splits(self):
         s = self.base_cfg["split"]
         for strategy in ("holdout", "kfold"):
-            for attr in ATTRIBUTES:
+            for attr in [a for a in ATTRIBUTES if (self.df[a] != "").any()]:  # the dummy data has no genus
                 rows = attribute_rows(self.df, attr)
                 yield strategy, attr, rows, make_split(rows, attr, strategy, s["ratios"], s["n_folds"], s["seed"])
 

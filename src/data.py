@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader, Dataset
 
 log = logging.getLogger(__name__)
 
-ATTRIBUTES = ("species", "sex", "disease", "maturity")
+ATTRIBUTES = ("genus", "species", "sex", "disease", "maturity")
 REQUIRED_COLUMNS = ("image_path", "crab_id")  # attribute columns may be missing or blank
 SPLIT_SETS = ("train", "val", "test")
 
@@ -152,6 +152,8 @@ def _two_way(crab_ids, labels, frac, seed):
 
 
 def make_split(rows, attribute, strategy, ratios, n_folds, seed):
+    if rows.empty:
+        raise SplitError(f"{attribute}: no labeled rows to split")
     labels = crab_labels(rows, attribute)
     crab_ids, y = list(labels.index), list(labels.values)
     train_r, val_r, test_r = ratios

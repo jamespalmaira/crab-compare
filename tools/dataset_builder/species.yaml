@@ -1,17 +1,44 @@
-# Species to collect: one scientific name per entry.
+# Taxa to collect. The main task is genus-level classification; species is a
+# secondary, exploratory label.
 #
 # TODO (user): confirm this list with a taxonomist before downloading images
 # or training. These are candidate edible crabs recorded in the Philippines;
 # the list has not been checked by an expert.
 #
-# Each name is resolved through the iNaturalist taxa endpoint and GBIF species
-# match. Names that do not resolve, or match only at a higher rank (for
-# example the genus), are reported and not collected from that source.
+# Each genus and species name is resolved through the iNaturalist taxa
+# endpoint and GBIF species match. Names that do not resolve at the expected
+# rank are reported and not collected from that source. Genus entries are
+# also queried on their own, so observations identified only to the genus
+# are included (with id_rank = genus and an empty species).
+#
+# optional: true marks a candidate that is fetched and counted, and reported
+# on its own line, but left out of the totals and of labels.csv unless the
+# builder runs with --include-optional.
+
+genera:
+  - name: Scylla
+  - name: Portunus
+  - name: Charybdis
+  - name: Atergatis
+    optional: true
+    note: optional candidate, not one of the edible target genera
+
 species:
-  - Scylla serrata
-  - Scylla olivacea
-  - Scylla tranquebarica
-  - Scylla paramamosain
-  - Portunus pelagicus
-  - Portunus sanguinolentus
-  - Charybdis feriata
+  - name: Scylla serrata
+    genus: Scylla
+  - name: Scylla olivacea
+    genus: Scylla
+  - name: Scylla tranquebarica
+    genus: Scylla
+  - name: Scylla paramamosain
+    genus: Scylla
+  - name: Portunus pelagicus
+    genus: Portunus
+  - name: Portunus sanguinolentus
+    genus: Portunus
+  - name: Charybdis feriata
+    genus: Charybdis
+  - name: Atergatis floridus
+    genus: Atergatis
+    optional: true
+    note: optional candidate (floral egg crab), not an edible target species

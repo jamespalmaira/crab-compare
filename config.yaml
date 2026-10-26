@@ -11,9 +11,13 @@ data:
   # labels.csv columns: image_path, crab_id, species, sex, disease, maturity
   # image_path is relative to the folder that holds labels.csv.
   labels_csv: data/labels.csv
-  # Disease is dropped from D2 (no public source provides it). Sex and
-  # maturity labels are weak and unverified (see handoff.md).
-  attributes: [species, sex, maturity]
+  # The main task is genus-level classification. Species is secondary and
+  # exploratory (Scylla species labels are unreliable from photos, and
+  # S. tranquebarica has thin data). Disease is dropped from D2 (no public
+  # source provides it). Sex and maturity labels are weak and unverified (see
+  # handoff.md).
+  main_attribute: genus
+  attributes: [genus, species, sex, maturity]
   num_workers: 2
   # Each attribute uses only the rows labeled for it. It is skipped (with a
   # message) if it has fewer than 2 classes, or any class has fewer than this

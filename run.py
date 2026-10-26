@@ -1,6 +1,7 @@
 """Crab model comparison: command-line entry point.
 
-    python run.py --config config.yaml --attribute species --models all --seeds 3
+    python run.py --config config.yaml --models all --seeds 3           # main attribute (genus)
+    python run.py --config config.yaml --attribute species --models all  # secondary, exploratory
     python run.py --config config.yaml --attribute all --models resnet50 efficientnet_b3
 
 Trains every selected model on the same crab-level split (every fold of it
@@ -33,7 +34,8 @@ log = logging.getLogger("run")
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description="Train and compare five backbones on the crab dataset.")
     ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--attribute", default="species", choices=list(ATTRIBUTES) + ["all"])
+    ap.add_argument("--attribute", default=None, choices=list(ATTRIBUTES) + ["all"],
+                    help="default: data.main_attribute in config.yaml (genus)")
     ap.add_argument("--models", nargs="+", default=["all"], help="'all' or timm model names from config.yaml")
     ap.add_argument("--seeds", type=int, default=None, help="use the first N seeds in training.seeds (default: all)")
     ap.add_argument("--labels", default=None, help="override data.labels_csv")
@@ -153,7 +155,8 @@ def main(argv=None):
         unknown = [m for m in models if m not in cfg["models"]]
         if unknown:
             raise ConfigError(f"Models not in config.yaml: {unknown}")
-        attributes = cfg["data"]["attributes"] if args.attribute == "all" else [args.attribute]
+        attribute = args.attribute or cfg["data"].get("main_attribute", "genus")
+        attributes = cfg["data"]["attributes"] if attribute == "all" else [attribute]
         out_dir = Path(cfg.get("results_dir", "results")) / cfg["run_name"]
 
         if args.analyze_only:

@@ -505,6 +505,198 @@ class DownloadTests(unittest.TestCase):
         self.assertEqual(client.get.call_count, 2)
 
 
+GENUS_YAML = """
+genera:
+  - name: Scylla
+  - name: Atergatis
+    optional: true
+species:
+  - name: Scylla serrata
+    genus: Scylla
+  - name: Atergatis floridus
+    genus: Atergatis
+"""
+
+
+def genus_routes(observations, occurrences):
+    """default_routes plus the Atergatis taxa (an optional genus and species)."""
+    routes = default_routes(observations, occurrences)
+    taxa, match = routes["/taxa"], routes["/species/match"]
+
+    def taxa2(p):
+        if p["q"] == "Atergatis floridus":
+            return {"results": [{"id": 500, "name": "Atergatis floridus", "rank": "species"}]}
+        if p["q"] == "Atergatis":
+            return {"results": [{"id": 499, "name": "Atergatis", "rank": "genus"}]}
+        if p["q"] == "Scylla":
+            return {"results": [{"id": 47184, "name": "Scylla", "rank": "genus"}]}
+        return taxa(p)
+
+    def match2(p):
+        if p["name"] == "Atergatis floridus":
+            return {"usageKey": 900, "speciesKey": 900, "canonicalName": "Atergatis floridus", "rank": "SPECIES",
+                    "matchType": "EXACT"}
+        if p["name"] == "Atergatis":
+            return {"usageKey": 899, "genusKey": 899, "canonicalName": "Atergatis", "rank": "GENUS", "matchType": "EXACT"}
+        return match(p)
+
+    routes.update({"/taxa": taxa2, "/species/match": match2})
+    return routes
+
+
+def genus_world():
+    scylla_sp = {"id": 47185, "name": "Scylla serrata", "rank": "species"}
+    scylla_g = {"id": 47184, "name": "Scylla", "rank": "genus"}
+    obs = [inat_obs(1, 1, [(11, "cc-by")], taxon=scylla_sp),
+           inat_obs(2, 2, [(21, "cc-by")], taxon=scylla_g),                                # research, genus only
+           inat_obs(3, 3, [(31, "cc0")], taxon=scylla_g, quality_grade="needs_id"),       # genus only, needs_id
+           inat_obs(4, 4, [(41, "cc-by")], taxon=scylla_sp, quality_grade="needs_id")]    # species needs_id: never
+    occs = [gbif_occ(200, [("https://museum.org/g.jpg", "cc-by")], taxonRank="GENUS", scientificName="Scylla"),
+            gbif_occ(201, [("https://museum.org/s.jpg", "cc-by")])]                        # species rank
+    return obs, occs
+
+
+class GenusTests(unittest.TestCase):
+    """Genus-level task: taxa list, genus-rank queries, needs_id flag, optional candidates."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        logging.disable(logging.WARNING)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        logging.disable(logging.NOTSET)
+
+    def test_species_yaml_has_a_genus_for_every_species(self):
+        taxa = build.load_species(build.TOOL / "species.yaml")
+        genera = {g["name"]: g for g in taxa["genera"]}
+        self.assertEqual(set(genera), {"Scylla", "Portunus", "Charybdis", "Atergatis"})
+        self.assertTrue(genera["Atergatis"]["optional"])
+        by_name = {s["name"]: s for s in taxa["species"]}
+        self.assertIn("Scylla tranquebarica", by_name)
+        self.assertTrue(by_name["Atergatis floridus"]["optional"])
+        for s in taxa["species"]:
+            self.assertIn(s["genus"], genera)
+            self.assertEqual(s["name"].split()[0], s["genus"])
+            self.assertEqual(s["optional"], s["genus"] == "Atergatis")
+
+    def test_plain_species_list_still_loads(self):
+        path = self.tmp / "s.yaml"
+        path.write_text("species:\n  - Scylla serrata\n  - Portunus pelagicus\n", encoding="utf-8")
+        taxa = build.load_species(path)
+        self.assertEqual([g["name"] for g in taxa["genera"]], ["Scylla", "Portunus"])
+        self.assertEqual([s["genus"] for s in taxa["species"]], ["Scylla", "Portunus"])
+        path.write_text("genera: [Scylla, Scylla]\n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            build.load_species(path)
+
+    def test_id_rank_from_taxon_rank(self):
+        self.assertEqual((inat.id_rank("genus"), inat.id_rank("subspecies"), inat.id_rank("family")),
+                         ("genus", "species", ""))
+        self.assertEqual((gbif.id_rank("GENUS"), gbif.id_rank("SPECIES")), ("genus", "species"))
+
+    def run_dry(self, extra=(), routes=None):
+        species = self.tmp / "species.yaml"
+        species.write_text(GENUS_YAML, encoding="utf-8")
+        obs, occs = genus_world()
+        client = FakeClient(routes or genus_routes(obs, occs))
+        with redirect_stdout(io.StringIO()) as out:
+            rc = build.main(["--dry-run", "--species-file", str(species), "--data-dir", str(self.tmp / "data"),
+                             "--imports", *extra], client=client)
+        self.assertEqual(rc, 0)
+        run = self.tmp / "data" / "external" / "runs" / "default"
+        return run, client, out.getvalue()
+
+    def test_genus_rank_records_are_included_by_default_without_needs_id(self):
+        run, client, report = self.run_dry()
+        inat_calls = [p for url, p in client.calls if url.endswith("/observations")]
+        genus_calls = [p for p in inat_calls if p.get("rank") == "genus"]
+        self.assertTrue(genus_calls)
+        self.assertTrue(all(p["quality_grade"] == "research" for p in inat_calls))  # needs_id off by default
+        labels_df = pd.read_csv(run / "labels.csv", dtype=str, keep_default_na=False)
+        for col in ("genus", "id_rank", "quality_grade", "review_flag"):
+            self.assertIn(col, labels_df.columns)
+        by_photo = labels_df.set_index(labels_df["image_path"].str.extract(r"/([^/]+)\.\w+$")[0])
+        self.assertEqual(by_photo.loc["photo_11", ["genus", "species", "id_rank"]].tolist(),
+                         ["Scylla", "Scylla serrata", "species"])
+        self.assertEqual(by_photo.loc["photo_21", ["genus", "species", "id_rank", "quality_grade"]].tolist(),
+                         ["Scylla", "", "genus", "research"])
+        self.assertNotIn("photo_31", by_photo.index)  # genus-rank needs_id: excluded by default
+        self.assertNotIn("photo_41", by_photo.index)  # species-rank needs_id: never fetched
+        gbif_rows = labels_df[labels_df["source"] == "gbif"]
+        self.assertEqual(gbif_rows[gbif_rows["id_rank"] == "genus"]["genus"].tolist(), ["Scylla"])
+        self.assertEqual(len(gbif_rows[gbif_rows["id_rank"] == "species"]), 1)  # from the species query only
+        self.assertTrue((labels_df["review_flag"] == "").all())
+        self.assertIn("Counts per genus: MAIN TASK", report)
+
+    def test_genus_needs_id_is_opt_in_and_flagged(self):
+        run, client, report = self.run_dry(["--include-genus-needs-id"])
+        needs = [p for url, p in client.calls if url.endswith("/observations") and p.get("quality_grade") == "needs_id"]
+        self.assertTrue(needs and all(p.get("rank") == "genus" for p in needs))
+        labels_df = pd.read_csv(run / "labels.csv", dtype=str, keep_default_na=False)
+        flagged = labels_df[labels_df["review_flag"] == "genus_needs_id"]
+        self.assertEqual(len(flagged), 1)
+        self.assertEqual(flagged.iloc[0][["genus", "species", "id_rank", "quality_grade"]].tolist(),
+                         ["Scylla", "", "genus", "needs_id"])
+        genus = pd.read_csv(run / "genus_counts.csv").set_index("genus")
+        self.assertEqual(genus.loc["Scylla", "photos_needs_id_flagged"], 1)
+        self.assertIn("genus_needs_id", (run / "warnings.txt").read_text(encoding="utf-8"))
+        self.assertIn("included, flagged", report)
+
+    def test_identifications_filter_is_passed_when_configured(self):
+        cfg = load_cfg()
+        cfg["inaturalist"]["genus_needs_id_identifications"] = "most_agree"
+        cfg_path = self.tmp / "cfg.yaml"
+        cfg_path.write_text(__import__("yaml").safe_dump(cfg), encoding="utf-8")
+        _, client, _ = self.run_dry(["--include-genus-needs-id", "--config", str(cfg_path)])
+        needs = [p for url, p in client.calls if url.endswith("/observations") and p.get("quality_grade") == "needs_id"]
+        self.assertTrue(needs and all(p.get("identifications") == "most_agree" for p in needs))
+
+    def test_optional_candidates_are_counted_apart(self):
+        atergatis = inat_obs(9, 9, [(91, "cc-by")], taxon={"id": 500, "name": "Atergatis floridus", "rank": "species"})
+        routes = genus_routes(*genus_world())
+        scylla_obs = routes["/observations"]
+
+        def observations(p):  # the Atergatis floridus query (taxon 500) returns its one observation
+            if p["taxon_id"] == 500:
+                return {"total_results": 1, "results": [atergatis] if p.get("id_above", 0) < 9 else []}
+            return scylla_obs(p)
+        routes["/observations"] = observations
+        run, _, report = self.run_dry(routes=routes)
+        counts = pd.read_csv(run / "counts.csv").set_index("species")
+        self.assertTrue(counts.loc["Atergatis floridus", "optional"])
+        self.assertEqual(counts.loc["Atergatis floridus", "photos"], 1)
+        genus = pd.read_csv(run / "genus_counts.csv").set_index("genus")
+        self.assertTrue(genus.loc["Atergatis", "optional"])
+        self.assertEqual(genus.loc["ALL", "photos"], genus.loc["Scylla", "photos"])  # optional not in ALL
+        labels_df = pd.read_csv(run / "labels.csv", dtype=str, keep_default_na=False)
+        self.assertNotIn("Atergatis", set(labels_df["genus"]))
+        self.assertIn("Atergatis floridus (optional)", report)
+        run2, _, _ = self.run_dry(["--include-optional"], routes=routes)
+        self.assertIn("Atergatis", set(pd.read_csv(run2 / "labels.csv", dtype=str, keep_default_na=False)["genus"]))
+
+    def test_genus_table_composition_and_shares(self):
+        recs = [rec(genus="Scylla", species="Scylla serrata", id_rank="species", photo_id=f"a{i}",
+                    observer_id=f"o{i}", observation_id=f"ob{i}", country="PH", quality_grade="research")
+                for i in range(3)]
+        recs += [rec(genus="Scylla", species="", id_rank="genus", photo_id="g1", observer_id="o0",
+                     observation_id="obg", country="ID", quality_grade="needs_id", review_flag="genus_needs_id"),
+                 rec(genus="Portunus", species="Portunus pelagicus", id_rank="species", photo_id="p1",
+                     observer_id="op", observation_id="obp", country="PH", source="gbif")]
+        taxa = {"genera": [{"name": "Scylla", "optional": False}, {"name": "Portunus", "optional": False}],
+                "species": []}
+        t = outputs.genus_table(recs, taxa, TH).set_index("genus")
+        s = t.loc["Scylla"]
+        self.assertEqual((s["photos"], s["groups_observer"], s["groups_observation"]), (4, 3, 4))
+        self.assertEqual((s["photos_genus_only"], s["photos_needs_id_flagged"], s["n_species"]), (1, 1, 1))
+        self.assertEqual(json.loads(s["photos_by_species"]), {"Scylla (genus only)": 1, "Scylla serrata": 3})
+        self.assertEqual(json.loads(s["photos_by_id_rank"]), {"genus": 1, "species": 3})
+        self.assertEqual(json.loads(s["photo_share_by_country"]), {"PH": 0.75, "ID": 0.25})
+        self.assertFalse(s["trainable"])
+        self.assertEqual(json.loads(t.loc["Portunus", "photos_by_quality_grade"]), {"none (gbif)": 1})
+        self.assertEqual(t.loc["ALL", "photos"], 5)
+
+
 class DryRunTests(unittest.TestCase):
     """End to end with mocked APIs: dry run writes metadata and counts but no image files."""
 
@@ -552,7 +744,7 @@ class DryRunTests(unittest.TestCase):
         self.assertTrue(labels_df["image_path"].str.startswith("external/").all())
         self.assertEqual(labels_df.loc[labels_df["sex"] == "male", "sex_source"].tolist(), ["gbif:sex"])
         warnings = (run / "warnings.txt").read_text(encoding="utf-8")
-        self.assertIn("Scylla fakeus: iNaturalist higher_rank", warnings)
+        self.assertIn("Scylla fakeus (species): iNaturalist higher_rank", warnings)
         self.assertIn("zero photos", warnings)
         place_calls = [p for url, p in client.calls if url.endswith("/observations")]
         self.assertTrue(all(p["place_id"] == 6888 for p in place_calls))  # looked up, not hardcoded

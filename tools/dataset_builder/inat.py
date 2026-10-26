@@ -8,11 +8,24 @@ from .records import new_record
 log = logging.getLogger(__name__)
 
 
-def resolve_taxon(client, base, name):
+RANKS = {"species": ("species", "subspecies"), "genus": ("genus",)}
+
+
+def id_rank(taxon_rank):
+    """'genus' for an observation identified only to genus, 'species' for species or below, else ''."""
+    rank = str(taxon_rank or "").lower()
+    if rank == "genus":
+        return "genus"
+    if rank in ("species", "subspecies", "variety", "form", "hybrid"):
+        return "species"
+    return ""
+
+
+def resolve_taxon(client, base, name, rank="species"):
     """{'inat_taxon_id', 'inat_name', 'inat_rank', 'inat_status', 'inat_note'} for one scientific name.
 
     Status: exact, synonym (the name points to another accepted taxon), higher_rank
-    (only a genus or above matched) or not_found.
+    (only a higher rank than `rank` matched) or not_found.
     """
     data = client.get_json(f"{base}/taxa", {"q": name, "is_active": "true", "per_page": 30})
     results = data.get("results", [])
@@ -24,18 +37,19 @@ def resolve_taxon(client, base, name):
         if hits:
             t = hits[0]
             out.update(inat_taxon_id=t["id"], inat_name=t["name"], inat_rank=t.get("rank", ""), inat_status=status)
-            if t.get("rank") not in ("species", "subspecies"):
+            if t.get("rank") not in RANKS[rank]:
                 out["inat_status"] = "higher_rank"
                 out["inat_note"] = f"matched {t['name']} at rank {t.get('rank')}"
             elif status == "synonym":
                 out["inat_note"] = f"{name} is treated as {t['name']}"
             return out
-    genus = name.split()[0].lower()
-    higher = [t for t in results if str(t.get("name", "")).lower() == genus]
-    if higher:
-        t = higher[0]
-        out.update(inat_status="higher_rank", inat_note=f"only {t['name']} ({t.get('rank')}) matched",
-                   inat_rank=t.get("rank", ""))
+    if rank == "species":
+        genus = name.split()[0].lower()
+        higher = [t for t in results if str(t.get("name", "")).lower() == genus]
+        if higher:
+            t = higher[0]
+            out.update(inat_status="higher_rank", inat_note=f"only {t['name']} ({t.get('rank')}) matched",
+                       inat_rank=t.get("rank", ""))
     return out
 
 
@@ -62,9 +76,13 @@ def controlled_terms(client, base):
     return labels.inat_terms(client.get_json(f"{base}/controlled_terms"))
 
 
-def fetch_observations(client, cfg, cache, key, taxon_id, place_id, quality_grade, limit=None):
+def fetch_observations(client, cfg, cache, key, taxon_id, place_id, quality_grade, limit=None,
+                       rank=None, identifications=None):
     """Raw observations with photos for one taxon and place, resumed from the cache.
 
+    taxon_id includes descendants; `rank` (e.g. 'genus') keeps only observations whose
+    taxon has exactly that rank, so a genus query returns the records identified only to
+    the genus. `identifications` (most_agree, some_agree) is the API's agreement filter.
     Pages by id (id_above) so results past 10,000 can be read. Stops early once the
     query has `limit` photos (the state then stays not-done, so a later run continues).
     """
@@ -76,6 +94,10 @@ def fetch_observations(client, cfg, cache, key, taxon_id, place_id, quality_grad
               "order_by": "id", "order": "asc"}
     if quality_grade and quality_grade != "any":
         params["quality_grade"] = quality_grade
+    if rank:
+        params["rank"] = rank
+    if identifications:
+        params["identifications"] = identifications
     state["capped"] = False
     while True:
         if limit and sum(len(o.get("photos") or []) for o in records) >= limit:
@@ -107,8 +129,8 @@ def _public_location(obs):
     return "", "", "no location"
 
 
-def photo_records(obs, species, country, terms, cfg):
-    """One record per photo of an observation."""
+def photo_records(obs, species, country, terms, cfg, genus="", review_flag="", optional=False):
+    """One record per photo of an observation. `species` is '' for a genus-level query."""
     maps = cfg["labels"]
     sex, sex_raw = labels.inat_annotation(obs.get("annotations"), terms.get("sex"), maps["sex"])
     mat, mat_raw = labels.inat_annotation(obs.get("annotations"), terms.get("maturity"), maps["maturity"])
@@ -121,7 +143,10 @@ def photo_records(obs, species, country, terms, cfg):
         url = re.sub(r"/square\.", f"/{size}.", p.get("url") or "")
         dims = p.get("original_dimensions") or {}
         out.append(new_record(
-            source="inaturalist", species=species, photo_id=f"inaturalist:photo:{p['id']}", image_url=url,
+            source="inaturalist", genus=genus, species=species,
+            id_rank=id_rank(taxon.get("rank")) or ("species" if species else "genus"),
+            optional=optional, review_flag=review_flag,
+            photo_id=f"inaturalist:photo:{p['id']}", image_url=url,
             observation_id=f"inaturalist:{obs['id']}", inat_observation_id=str(obs["id"]), inat_photo_id=str(p["id"]),
             observation_url=obs.get("uri") or f"https://www.inaturalist.org/observations/{obs['id']}",
             observer_id=f"inaturalist:{user['id']}" if user.get("id") else "", observer_name=user.get("login", ""),

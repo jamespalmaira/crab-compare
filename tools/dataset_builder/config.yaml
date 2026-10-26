@@ -29,6 +29,17 @@ inaturalist:
   base_url: https://api.inaturalist.org/v1
   min_interval: 1.0         # seconds between requests (about 1 per second)
   quality_grade: research   # default; override with --quality-grade
+  # Genus entries in species.yaml are also queried with rank=genus, which returns
+  # only observations identified to the genus and no further. Those use
+  # quality_grade above. Set genus_needs_id: true (or --include-genus-needs-id)
+  # to also keep genus-rank needs_id observations; they are flagged
+  # review_flag=genus_needs_id in labels.csv and metadata.csv.
+  genus_needs_id: false
+  # Optional stricter filter for those needs_id observations. The iNaturalist
+  # observations API offers `identifications` = most_agree | some_agree |
+  # most_disagree (most_agree: most identifications agree with the observation
+  # taxon) and `identified=true` (has community identifications). null = off.
+  genus_needs_id_identifications: null
   per_page: 200
   photo_size: medium        # square, small, medium (500 px), large (1024 px), original
 
