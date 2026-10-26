@@ -1,0 +1,9 @@
+# Manual import: a ReID-style dataset (for example Crab-146) where the filename holds the crab ID.
+name: crab146
+type: filename_id
+path: data/manual/crab146
+regex: '^(?P<id>\d+)_'        # named group "id" (or group 1) is the crab ID
+species: Scylla serrata       # set to the dataset's species, or map parent folder names with class_map
+license: CC-BY-4.0
+url: https://github.com/...
+attribution: "Authors, paper or repository (year)"

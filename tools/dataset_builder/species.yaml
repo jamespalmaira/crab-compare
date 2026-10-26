@@ -1,0 +1,17 @@
+# Species to collect: one scientific name per entry.
+#
+# TODO (user): confirm this list with a taxonomist before downloading images
+# or training. These are candidate edible crabs recorded in the Philippines;
+# the list has not been checked by an expert.
+#
+# Each name is resolved through the iNaturalist taxa endpoint and GBIF species
+# match. Names that do not resolve, or match only at a higher rank (for
+# example the genus), are reported and not collected from that source.
+species:
+  - Scylla serrata
+  - Scylla olivacea
+  - Scylla tranquebarica
+  - Scylla paramamosain
+  - Portunus pelagicus
+  - Portunus sanguinolentus
+  - Charybdis feriata

@@ -1,0 +1,12 @@
+# Manual import: a folder of images plus a CSV. Copy to <name>.yaml and fill in.
+# Files ending in .yaml in this folder are imported by default.
+name: kaggle_mudcrab          # source name in labels.csv (lowercase, digits, _ or -)
+type: folder_csv
+path: data/manual/kaggle_mudcrab   # relative to the project root (data/ is not in git)
+csv: labels.csv               # columns: file (required), species, sex, maturity,
+                              # observer_id, observation_id, id, license (all optional)
+species: Scylla serrata       # used when the CSV has no species column
+license: CC-BY-4.0            # must normalise to a code on the allowlist
+url: https://www.kaggle.com/datasets/...
+attribution: "Author name, dataset title (year)"
+country: PH                   # optional

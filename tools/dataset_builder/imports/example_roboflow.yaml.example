@@ -1,0 +1,13 @@
+# Manual import: a Roboflow export (YOLO or COCO). Each box becomes one cropped image.
+name: roboflow_crabs
+type: roboflow_yolo           # or roboflow_coco
+path: data/manual/roboflow_crabs
+license: CC-BY-4.0
+url: https://universe.roboflow.com/...
+attribution: "Workspace/project name on Roboflow Universe"
+min_box_size: 32              # boxes smaller than this (pixels) are skipped
+box_padding: 0.05             # extra margin around each box, as a fraction of its size
+class_map:                    # dataset class -> species, or {species, sex, maturity}
+  mud_crab: Scylla serrata
+  blue_swimming_crab_female: {species: Portunus pelagicus, sex: female}
+# Classes not listed (for example a generic "crab") are skipped and counted.

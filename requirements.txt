@@ -39,3 +39,7 @@ thop>=0.1.1          # parameter and FLOP counts
 # --- Utilities ---
 tqdm>=4.66
 pyyaml>=6.0
+
+# --- Dataset builder (tools/dataset_builder) ---
+requests>=2.31       # iNaturalist and GBIF API reads
+imagehash>=4.3       # perceptual hashes for near-duplicate removal

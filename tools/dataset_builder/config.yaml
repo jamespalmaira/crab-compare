@@ -1,0 +1,85 @@
+# Dataset builder settings (tools/dataset_builder). See README.md.
+# Public reads only: no API keys or tokens are used or stored.
+
+# The contact email for the User-Agent is read from this environment variable.
+# It is never written to any file.
+contact_email_env: CRAB_DATASET_CONTACT_EMAIL
+user_agent: "crab-dataset-builder/0.1 (dissertation research; public-data reads)"
+
+countries:
+  default: [PH]
+  # Neighbouring Indo-Pacific countries, for when Philippine counts are thin.
+  widened: [PH, ID, MY, BN, SG, TH, VN, KH, TW, TL, PG]
+  # ISO 3166-1 alpha-2 code -> name used to look up the iNaturalist place.
+  # GBIF is queried by the code itself.
+  names:
+    PH: Philippines
+    ID: Indonesia
+    MY: Malaysia
+    BN: Brunei
+    SG: Singapore
+    TH: Thailand
+    VN: Vietnam
+    KH: Cambodia
+    TW: Taiwan
+    TL: Timor-Leste
+    PG: Papua New Guinea
+
+inaturalist:
+  base_url: https://api.inaturalist.org/v1
+  min_interval: 1.0         # seconds between requests (about 1 per second)
+  quality_grade: research   # default; override with --quality-grade
+  per_page: 200
+  photo_size: medium        # square, small, medium (500 px), large (1024 px), original
+
+gbif:
+  base_url: https://api.gbif.org/v1
+  min_interval: 0.5
+  page_size: 300
+  max_offset: 100000        # GBIF search paging limit
+  # The iNaturalist research-grade dataset on GBIF; its records duplicate iNaturalist.
+  inaturalist_dataset_key: 50c9509d-22c7-4a22-a47d-8c48425ef4a7
+
+download:
+  min_interval: 1.0         # seconds between image requests to one host
+
+http:
+  timeout: 30
+  max_retries: 6
+  backoff_base: 2.0         # seconds; doubles after each failed attempt
+
+licenses:
+  # Only images under these licenses are downloaded. Everything else
+  # (all rights reserved, unlicensed, ND, unrecognised) is skipped and counted.
+  allowlist: [CC0, CC-BY, CC-BY-SA, CC-BY-NC, CC-BY-NC-SA]
+
+# Source values (lowercase) -> label. Values not listed are left empty and
+# kept as *_raw in metadata.csv. Labels are never guessed from images.
+labels:
+  sex:
+    female: female
+    male: male
+  maturity:
+    adult: adult
+    juvenile: juvenile
+    immature: juvenile
+    subadult: juvenile
+
+near_duplicates:
+  max_distance: 4           # perceptual-hash (64-bit pHash) Hamming distance
+
+# When two copies of one photo are found, the earlier source here is kept.
+# Manual imports come after these.
+source_priority: [inaturalist, gbif]
+
+thresholds:
+  min_species_groups: 30    # observer-level groups for a species to be trainable
+  min_attribute_classes: 2
+  min_class_groups: 30      # observer-level groups per attribute class
+  dominance: 0.8            # a class is dominated if one source supplies more than this share
+
+review:
+  per_species: 50
+  thumb_size: 160
+  columns: 10
+  seed: 0
