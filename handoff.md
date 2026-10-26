@@ -1,7 +1,7 @@
 # Handoff: Training and Test Bench (Dissertation 2)
 
 ## Purpose
-A command-line training and comparison bench. It trains five image classifiers on the same crab dataset under identical settings, evaluates them, and produces a ranked report. The top-ranked backbone is carried into Dissertation 3.
+A command-line training and comparison bench. It trains five image classifiers on the same crab dataset under identical settings, evaluates them, and produces a ranked report. The top-ranked backbone is carried into Dissertation 3. The dataset is built from public sources only (see "Data" below).
 
 Out of scope for this bench: the mobile app, the multi-task model, decision-support rules, and any paper.
 
@@ -16,14 +16,17 @@ Out of scope for this bench: the mobile app, the multi-task model, decision-supp
 | GitHub account and private repo | Done. Remote `origin` is the private `crab-compare` repo; `main` is pushed. |
 | Python environment | Done. `.venv` with Python 3.10.19, torch 2.14.1+cu126, CUDA available (True). GPU: NVIDIA GeForce GTX 1650, 4 GB VRAM. |
 | Environment verification (`verify_env.py`) | Done. All five models and all package imports pass. |
-| Code (`src/`, `run.py`, `config.yaml`) | Build steps 1–7 done and tested on dummy data only (holdout and 5-fold, 1 epoch, 2 seeds, random weights): crab-level split, model factory, training loop, evaluation with saved predictions, Friedman/McNemar (Holm), Grad-CAM check, ONNX export and latency, thop FLOPs, weighted ranking with sensitivity check, and `report.html`. `python run.py --analyze-only` re-runs steps 5–7 on an existing results folder. Not yet run with pretrained weights or real data. |
-| Crab dataset | Not collected or labeled yet. |
-| Labeling guide and expert | Not confirmed. |
+| Code (`src/`, `run.py`, `config.yaml`) | Build steps 1–7 done and tested on dummy data only (holdout and 5-fold, 1 epoch, 1–2 seeds, random weights): group-safe split on `crab_id`, model factory, training loop, evaluation with saved predictions, Friedman/McNemar (Holm), Grad-CAM check, ONNX export and latency, thop FLOPs, weighted ranking with sensitivity check, and `report.html`. Ready for public data: each attribute uses only its labeled rows and is skipped (with a message) below 2 classes or 30 groups per class; with a `source` column it reports per-source accuracy/macro-F1 and flags classes where one source supplies > 80% of images. `python run.py --analyze-only` re-runs steps 5–7 on an existing results folder. Not yet run with pretrained weights or real data. |
+| Crab dataset | Public datasets only (iNaturalist, GBIF, manually imported sets). Not assembled into `labels.csv` yet. |
+| Labels | Taken from the public sources; no in-house labeling. Species is the main label. Sex and maturity are weak and unverified. Disease is dropped from D2 (no public source provides it). |
 
 ## Decisions already made
 - **Models (five, via `timm`):** EfficientNet-B3, ResNet-50, DenseNet-121, MobileNetV3 (`mobilenetv3_large_100`), ViT (`vit_base_patch16_224`).
-- **Attributes in D2:** species, sex, disease, maturity. Age and hormonal indicators are deferred. Hormones are not measurable from photos; the D3 proxy is "visible reproductive and molting indicators." Final list to be confirmed with the adviser before training.
-- **Split by individual crab, not by image.** All photos of one crab stay in one set. Stratified where possible. Fixed seed, saved to disk, reused by every model.
+- **Data sources: public datasets only** (decided 2026-10-26): iNaturalist, GBIF, and manually imported sets. `labels.csv` has a `source` column naming where each image came from.
+- **Attributes in D2:** species, sex, maturity (`config.yaml` `data.attributes`). **Disease is dropped** from D2 because no public source provides it; the code still accepts a disease column but it is not configured. **Sex and maturity labels are weak and unverified**: they come from observers' notes or annotations in the public sources, not from an expert, and must be reported as such. Age and hormonal indicators are deferred. Hormones are not measurable from photos; the D3 proxy is "visible reproductive and molting indicators." Final list to be confirmed with the adviser before training.
+- **Missing labels:** each attribute is trained and evaluated only on rows where its label is non-empty. An attribute is skipped, with a logged reason, if it has fewer than 2 classes or any class has fewer than `data.min_groups_per_class` (30) distinct `crab_id` groups. Used and skipped attributes are recorded in `results/<run>/attributes.json` and `report.html`.
+- **Split by `crab_id` group, not by image.** `crab_id` is a grouping key, not a verified individual: depending on the source it is an observer, an observation, or an ID taken from the filename. All rows with the same `crab_id` stay in one set. Stratified where possible. Fixed seed, saved to disk, reused by every model. The split cannot stop the same physical crab from appearing under two different groups (for example the same animal posted twice, or the same photo in two sources).
+- **Source checks:** with a `source` column, every run reports test accuracy and macro-F1 per source, and any class where one source supplies more than 80% of the images (`data.source_dominance_threshold`) is flagged, since a model can learn that source's camera, background or framing instead of the crab.
 - **One backbone for all attributes.** Selection uses one pre-written rule, not per-attribute picks by hand.
 - **Selection score:** 50% macro-F1, 20% inference time, 15% model size, 15% Grad-CAM compatibility. Min-max normalised. Weights fixed before results are seen.
 - **Fairness rules:** identical augmentation, optimizer, learning rate, batch size, epochs and early-stopping rule for every model. "Batch size" means the effective batch size (32): each model has its own micro-batch to fit the 4 GB GPU, and gradient accumulation brings every model to the same 32.
@@ -36,26 +39,24 @@ Out of scope for this bench: the mobile app, the multi-task model, decision-supp
 - **No containers.** A virtual environment is sufficient for now.
 
 ## Open questions (must be resolved before training)
-1. **Sample size:** distinct crabs per species. Target is at least 50 per species; floor is about 30 with an honest caveat. Count crabs, not photos.
-2. **Validation strategy:** the handout specifies a 70/15/15 crab-level split with 3 to 5 seeds. If the dataset is small, switch to 5-fold crab-level cross-validation. Decide before training.
-3. **Attribute list:** confirm with adviser whether maturity and egg-bearing/molt are included in D2.
-4. **Labeling:** who labels, labeling guide written, and inter-rater agreement (Cohen's kappa) planned.
-5. **Git and GitHub:** user creates the account and a private `crab-compare` repository, then provides username and the git name/email. Claude Code must not invent these.
-6. **Mobile app:** not in this bench. Current recommendation is a basic on-device speed test in D2 and the full app in the final dissertation. Confirm with adviser.
+1. **Sample size:** distinct `crab_id` groups per class. The bench skips any attribute with a class under 30 groups; the target is at least 50 per species. Count groups, not photos.
+2. **Validation strategy:** the handout specifies a 70/15/15 group-level split with 3 to 5 seeds. If the dataset is small, switch to 5-fold group-level cross-validation. Decide before training.
+3. **Attribute list:** disease is dropped. Confirm with the adviser whether the weak sex and maturity labels are reported in D2 (and if so, as exploratory results with their label source stated), and whether egg-bearing/molt is included.
+4. **Label quality:** which public labels to accept (for example iNaturalist research-grade only), whether to spot-check a sample of species, sex and maturity labels against a reference, and whether to report agreement (Cohen's kappa) on that sample.
+5. **Grouping key per source:** which field becomes `crab_id` for each source (observation ID, observer, or filename ID), and how to find duplicates across sources (the same photo or animal in iNaturalist and GBIF) before splitting.
+6. **Source confounding:** what to do when a class is flagged (one source > 80% of its images): rebalance, add sources, or report it as a limitation.
+7. **Image licences:** record each image's licence and attribution from the source, and check that the licences allow use in the dissertation.
+8. **Mobile app:** not in this bench. Current recommendation is a basic on-device speed test in D2 and the full app in the final dissertation. Confirm with adviser.
+
+Resolved: the GitHub account and private `crab-compare` repository exist, and git name/email are set by the user (Claude Code must still not invent or change them).
 
 ## Next steps, in order
-1. User creates the GitHub account and private repo (see `CLAUDE_CODE_SETUP.md`, section 2a).
-2. Run `CLAUDE_CODE_SETUP.md` in Claude Code: prerequisites, git init, virtual environment, PyTorch (GPU or CPU build), `requirements.txt`, verification script. Stop and report results before building.
-3. Build the bench in the order given in `CLAUDE_CODE_HANDOUT.md`:
-   1. Project skeleton, `config.yaml`, data loader, crab-level split
-   2. Model factory; forward-pass check for all five models
-   3. Training loop on one model and one attribute, then all five
-   4. Metrics and results table
-   5. Statistics, Grad-CAM, ONNX export and latency
-   6. Weighted ranking and report
-   7. Test on a dummy dataset before any real photos are used
-4. Commit after each completed step.
-5. Collect and label data only after the pipeline passes on dummy data.
+Done: GitHub repo, environment setup and verification, and build steps 1–7 of `CLAUDE_CODE_HANDOUT.md`, tested on dummy data.
+1. Resolve the open questions above with the adviser.
+2. Assemble the public data into `data/labels.csv`: `image_path`, `crab_id` (the agreed grouping key), `species`, `sex`, `maturity` (blank where unknown), `source`; remove duplicates across sources.
+3. Run `python run.py --attribute all --splits-only` to see which attributes are usable and check the source-balance warnings before training.
+4. First real run with pretrained weights (needs internet once, about 550 MB of weights).
+5. Commit code changes after each step; never commit data or results.
 
 ## Expected layout
 ```
@@ -64,7 +65,10 @@ crab-compare/
   config.yaml
   data/              (not in git)
   src/
-    data.py  models.py  train.py  evaluate.py  stats.py  gradcam.py  export.py  select.py  report.py
+    config.py  data.py  models.py  train.py  evaluate.py  stats.py  gradcam.py  export.py  select.py
+    analyze.py  report.py
+  scripts/           make_dummy_data.py, check_models.py, smoke_train.py
+  tests/             python -m unittest discover -s tests -t .
   run.py
   results/           (not in git)
 ```
@@ -73,6 +77,8 @@ crab-compare/
 ```
 python run.py --config config.yaml --attribute species --models all --seeds 3
 python run.py --config config.yaml --attribute all --models resnet50 efficientnet_b3
+python run.py --config config.yaml --attribute all --splits-only      # check usable attributes and sources
+python run.py --config config.yaml --run-name <run> --analyze-only    # re-run statistics, ranking, report
 ```
 
 ## Rules for whoever continues this work
@@ -82,6 +88,7 @@ python run.py --config config.yaml --attribute all --models resnet50 efficientne
 - Do not force-push or commit data, checkpoints or results.
 - Ask the user before downloading large datasets or changing the model list.
 - Log random seeds, GPU model, CUDA version and package versions with every result.
+- Do not describe `crab_id` as a verified individual, or sex and maturity labels as verified, in any output.
 
 ## Reference files
 - `requirements.txt`

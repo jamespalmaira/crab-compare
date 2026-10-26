@@ -7,8 +7,16 @@ This is the crab model comparison project (Dissertation 2). Read `CLAUDE_CODE_HA
 - After it runs, report the output to the user before starting any build work.
 - The script never logs in to GitHub, sets git name/email, or pushes. Do not add code that does these things, and do not put tokens, passwords or personal emails in any file.
 
+## Data
+- The project uses public datasets only: iNaturalist, GBIF, and manually imported sets. `labels.csv` records each image's `source`.
+- Disease is dropped from Dissertation 2: no public source provides it.
+- Sex and maturity labels are weak and unverified (taken from the public sources, not checked by an expert). Report them as such; never present them as verified.
+- `crab_id` is a grouping key (an observer, an observation, or an ID from the filename), not a verified individual crab.
+- Each attribute uses only the rows labeled for it, and is skipped with a message if it has too few classes or groups (see `config.yaml`).
+- `CLAUDE_CODE_HANDOUT.md` predates these decisions; where it lists disease or calls `crab_id` an individual, `handoff.md` wins.
+
 ## Rules
-- Split data by individual crab, never by image.
+- Split data by `crab_id` group, never by image. (`crab_id` is the grouping key above; all rows with the same `crab_id` stay in one set.)
 - Use the same split, augmentation, optimizer, epochs and seeds for all five models.
 - Choose the backbone only with the pre-written weighted rule. No manual per-attribute picks.
 - Do not promise exact age or hormone levels from photos.
