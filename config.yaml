@@ -8,16 +8,15 @@ run_name: dev
 results_dir: results      # outputs go to results/<run_name>/ (not committed)
 
 data:
-  # labels.csv columns: image_path, crab_id, species, sex, disease, maturity
-  # image_path is relative to the folder that holds labels.csv.
+  # labels.csv from tools/dataset_builder: image_path, crab_id (observer group),
+  # genus, species, country, source, ... image_path is relative to labels.csv.
   labels_csv: data/labels.csv
   # The main task is genus-level classification. Species is secondary and
   # exploratory (Scylla species labels are unreliable from photos, and
-  # S. tranquebarica has thin data). Disease is dropped from D2 (no public
-  # source provides it). Sex and maturity labels are weak and unverified (see
-  # handoff.md).
+  # S. tranquebarica has thin data). Sex, maturity and disease are out of scope
+  # (the code still accepts those columns). See handoff.md.
   main_attribute: genus
-  attributes: [genus, species, sex, maturity]
+  attributes: [genus, species]
   num_workers: 2
   # Each attribute uses only the rows labeled for it. It is skipped (with a
   # message) if it has fewer than 2 classes, or any class has fewer than this
@@ -28,7 +27,10 @@ data:
   source_dominance_threshold: 0.8
 
 split:
-  strategy: holdout       # holdout (single 70/15/15 split) or kfold (crab-level CV)
+  # 5-fold cross-validation by crab_id group (observer, from the dataset builder),
+  # stratified on species within genus. Decided 2026-10-26: the smallest genus
+  # (Charybdis, 65 groups) gives about 13 test groups per fold.
+  strategy: kfold         # holdout (single 70/15/15 split) or kfold (crab-level CV)
   ratios: [0.70, 0.15, 0.15]   # train, val, test. In kfold, test is the held-out
                                # fold and val is carved from the rest at val/(train+val).
   n_folds: 5
