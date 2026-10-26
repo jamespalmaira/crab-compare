@@ -25,6 +25,18 @@ data:
   # With a source column in labels.csv, flag any class where one source
   # supplies more than this share of the images.
   source_dominance_threshold: 0.8
+  # External test set: rows where `column` equals `value` are held out of every
+  # train, validation and CV-test split, and every model is tested on them after
+  # training. Every observer who appears in the external set (by crab_id and
+  # observer_id) is also removed from the training side. The Philippine photos
+  # are the local check: genus is tied to country, and about 95% of the data is
+  # non-Philippine. Remove this block to use every row for cross-validation.
+  external_test:
+    column: country
+    value: PH
+    name: Philippines
+    group_columns: [crab_id, observer_id]
+    report_by: genus
 
 split:
   # 5-fold cross-validation by crab_id group (observer, from the dataset builder),

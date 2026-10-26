@@ -50,13 +50,58 @@ def load_labels(csv_path):
         if attr not in df.columns:
             log.info("%s has no %s column; treating it as unlabeled", csv_path, attr)
             df[attr] = ""
-    columns = list(REQUIRED_COLUMNS) + list(ATTRIBUTES) + (["source"] if "source" in df.columns else [])
-    df = df[columns].apply(lambda col: col.str.strip())
+    df = df.apply(lambda col: col.str.strip())  # other columns (source, country, observer_id, ...) are kept
     if (df["crab_id"] == "").any() or (df["image_path"] == "").any():
         raise ValueError(f"{csv_path} has rows with an empty crab_id or image_path")
     if "source" in df.columns:
         df["source"] = df["source"].replace("", "unknown")
     return df
+
+
+GROUP_COLUMNS = ("crab_id", "observer_id")  # columns that identify who took a photo
+
+
+def split_external(df, ext):
+    """Hold out an external test set: rows where ext['column'] equals ext['value'] (or one of a list).
+
+    Returns (internal, external, info). Every observer that appears in the external set
+    (by crab_id, and by observer_id when that column exists) is removed from the internal
+    side, so no observer's photos are on both sides. info counts what was held out and
+    what the observer overlap removed, overall and per main-attribute class.
+    """
+    column = ext["column"]
+    if column not in df.columns:
+        raise ValueError(f"data.external_test.column {column!r} is not in labels.csv")
+    values = ext["value"] if isinstance(ext["value"], (list, tuple)) else [ext["value"]]
+    values = [str(v) for v in values]
+    is_ext = df[column].isin(values)
+    external, rest = df[is_ext], df[~is_ext]
+    group_cols = [c for c in ext.get("group_columns", GROUP_COLUMNS) if c in df.columns]
+    overlap = pd.Series(False, index=rest.index)
+    for c in group_cols:
+        ext_ids = set(external[c]) - {""}
+        overlap |= rest[c].isin(ext_ids)
+    removed, internal = rest[overlap], rest[~overlap]
+    by = ext.get("report_by")
+
+    def per(frame):
+        if not by or by not in frame.columns:
+            return {}
+        return {k: {"images": int(len(g)), "groups": int(g["crab_id"].nunique())}
+                for k, g in frame[frame[by] != ""].groupby(by)}
+
+    info = {
+        "column": column, "values": values, "group_columns": group_cols,
+        "external": {"images": int(len(external)), "groups": int(external["crab_id"].nunique()), "by_class": per(external)},
+        "removed_overlap": {"images": int(len(removed)), "groups": int(removed["crab_id"].nunique()),
+                            "by_class": per(removed)},
+        "internal": {"images": int(len(internal)), "groups": int(internal["crab_id"].nunique()), "by_class": per(internal)},
+    }
+    log.info("External test (%s in %s): %d images, %d groups held out; observer overlap removed %d images, "
+             "%d groups from the training side; %d images, %d groups left for cross-validation",
+             column, values, len(external), info["external"]["groups"], len(removed), info["removed_overlap"]["groups"],
+             len(internal), info["internal"]["groups"])
+    return internal.reset_index(drop=True), external.reset_index(drop=True), info
 
 
 def attribute_rows(df, attribute):

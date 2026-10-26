@@ -23,9 +23,9 @@ import torch
 from src.config import ConfigError, load_config
 from src.analyze import analyze
 from src.data import (ATTRIBUTES, SPLIT_SETS, SplitError, crab_finer, get_split, load_labels, prepare_attribute,
-                      source_balance)
+                      source_balance, split_external)
 from src.select import write_ranking
-from src.evaluate import evaluate_run
+from src.evaluate import evaluate_external, evaluate_run
 from src.report import merge_rows, write_report, write_tables
 from src.train import GPUOutOfMemory, NonFiniteLoss, limit_gpu_memory, resolve_device, train_one
 
@@ -104,6 +104,21 @@ def save_attribute_usage(out_dir, usages):
     path.write_text(json.dumps(saved, indent=1), encoding="utf-8")
 
 
+def hold_out_external(cfg, df, out_dir):
+    """(internal rows, external rows or None). With data.external_test, the external rows and every
+    observer who appears in them are taken out before any split is made; external_split.json
+    records the counts."""
+    ext = cfg["data"].get("external_test")
+    if not ext:
+        return df, None
+    internal, external, info = split_external(df, ext)
+    info["name"] = ext.get("name", "external")
+    path = Path(out_dir) / "external_split.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(info, indent=1), encoding="utf-8")
+    return internal, external
+
+
 def select_attributes(cfg, df, attributes, out_dir):
     """Labeled rows and the saved split for every usable attribute; skipped ones are logged."""
     min_groups = cfg["data"].get("min_groups_per_class", 30)
@@ -179,6 +194,7 @@ def main(argv=None):
             return 0
 
         df = load_labels(cfg["data"]["labels_csv"])
+        df, external = hold_out_external(cfg, df, out_dir)
         splits = select_attributes(cfg, df, attributes, out_dir)
         if args.splits_only:
             return 0
@@ -190,7 +206,7 @@ def main(argv=None):
                  cfg["run_name"], out_dir, models, seeds, cfg["training"]["epochs"],
                  cfg["training"]["pretrained"], cfg["training"]["amp"])
 
-        run_rows, class_rows, source_rows = [], [], []
+        run_rows, class_rows, source_rows, external_rows = [], [], [], []
         for attr, (rows, split) in splits.items():
             folds = args.folds if args.folds is not None else range(len(split["folds"]))
             for arch in models:
@@ -203,8 +219,11 @@ def main(argv=None):
                         run_rows.append(row)
                         class_rows.append(per_class)
                         source_rows.append(per_source)
+                        if external is not None:
+                            external_rows += evaluate_external(res.model, res.data_cfg, res.info, external, cfg,
+                                                               out_dir, device, cfg["models"][arch]["batch_size"])
                         # write after every run so finished results survive a later failure
-                        write_tables(out_dir, run_rows, class_rows, list(cfg["models"]), source_rows)
+                        write_tables(out_dir, run_rows, class_rows, list(cfg["models"]), source_rows, external_rows)
                         del res
                         gc.collect()
                         torch.cuda.empty_cache()

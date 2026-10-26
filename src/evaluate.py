@@ -21,6 +21,9 @@ import seaborn as sns  # noqa: E402
 import torch  # noqa: E402
 from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support, roc_auc_score  # noqa: E402
 
+from torch.utils.data import DataLoader  # noqa: E402
+
+from src.data import CrabDataset, attribute_rows, build_transforms  # noqa: E402
 from src.models import param_count  # noqa: E402
 from src.train import predict, run_name  # noqa: E402
 
@@ -167,6 +170,52 @@ def model_size_mb(model):
     buf = io.BytesIO()
     torch.save(model.state_dict(), buf)
     return buf.tell() / 1e6
+
+
+# ---------------------------------------------------------------- external test set
+
+EXTERNAL_METRICS = ("accuracy", "macro_precision", "macro_recall", "macro_specificity", "macro_f1", "roc_auc_ovr")
+
+
+def evaluate_external(model, data_cfg, info, rows, cfg, out_dir, device, batch_size=32):
+    """Test one trained run on the external set (fp32). Saves its predictions and returns the
+    external_metrics.csv rows: one 'ALL' row with the overall metrics, then one per class with
+    its images, groups (distinct crab_id), precision, recall and F1.
+
+    Rows without a label for this attribute, or with a class the model was not trained on,
+    are left out (and logged).
+    """
+    attribute, classes, arch = info["attribute"], info["classes"], info["arch"]
+    rows = attribute_rows(rows, attribute)
+    unknown = rows[~rows[attribute].isin(classes)]
+    if len(unknown):
+        log.warning("External %s: %d image(s) of classes not in training left out: %s", attribute, len(unknown),
+                    sorted(unknown[attribute].unique()))
+        rows = rows[rows[attribute].isin(classes)]
+    if rows.empty:
+        log.warning("External %s: no images to test", attribute)
+        return []
+    rows = rows.reset_index(drop=True)
+    image_root = Path(cfg["data"]["labels_csv"]).parent
+    ds = CrabDataset(rows, image_root, attribute, classes, build_transforms(data_cfg, cfg["augmentation"], train=False))
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    probs, y_true = predict(model, loader, device, arch)
+    name = run_name(arch, info["fold"], info["seed"])
+    save_predictions(Path(out_dir) / "predictions_external" / f"{arch}_{attribute}_{info['seed']}_{info['fold']}.csv",
+                     ds, y_true, probs, classes)
+    summary, per_class, cm = compute_metrics(y_true, probs, classes)
+    save_confusion_matrix(cm, classes, Path(out_dir) / "confusion_matrices_external" / attribute / name,
+                          f"{info['model']} - {attribute} - external - fold {info['fold']} seed {info['seed']}")
+    groups = rows.groupby(attribute)["crab_id"].nunique()
+    keys = {"attribute": attribute, "model": info["model"], "arch": arch, "fold": info["fold"], "seed": info["seed"]}
+    out = [{**keys, "class": "ALL", "n_images": len(rows), "n_groups": int(rows["crab_id"].nunique()),
+            **{m: summary[m] for m in EXTERNAL_METRICS}}]
+    for _, r in per_class.iterrows():
+        out.append({**keys, "class": r["class"], "n_images": int(r["support"]), "n_groups": int(groups.get(r["class"], 0)),
+                    "precision": r["precision"], "recall": r["recall"], "f1": r["f1"]})
+    log.info("%s external: %d images, %d groups, acc %.4f macro-F1 %.4f", name, len(rows), out[0]["n_groups"],
+             summary["accuracy"], summary["macro_f1"])
+    return out
 
 
 # ---------------------------------------------------------------- one run

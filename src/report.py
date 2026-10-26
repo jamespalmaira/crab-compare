@@ -69,9 +69,11 @@ def summarise_sources(per_source, model_order=None):
     return summary.reset_index(drop=True)
 
 
-def write_tables(out_dir, run_rows, class_rows, model_order=None, source_rows=None):
+def write_tables(out_dir, run_rows, class_rows, model_order=None, source_rows=None, external_rows=None):
     out_dir = Path(out_dir)
     per_seed = merge_rows(out_dir / "per_seed.csv", run_rows)
+    if external_rows:
+        merge_rows(out_dir / "external_metrics.csv", external_rows, keys=RUN_KEYS + ["class"])
     merge_rows(out_dir / "per_class.csv", pd.concat(class_rows, ignore_index=True), keys=RUN_KEYS + ["class"])
     source_rows = [s for s in (source_rows or []) if not s.empty]
     if source_rows:
@@ -271,6 +273,58 @@ def source_sections(cfg, out_dir):
     return s
 
 
+SMALL_GROUPS = 10  # external classes with fewer groups are marked small
+
+
+def external_section(cfg, out_dir):
+    """The external test set (data.external_test): what was held out, and every model's results on it."""
+    out_dir = Path(out_dir)
+    split_path, metrics_path = out_dir / "external_split.json", out_dir / "external_metrics.csv"
+    if not split_path.exists():
+        return []
+    info = json.loads(split_path.read_text(encoding="utf-8"))
+    name = info.get("name", "external")
+    ext, rem = info["external"], info["removed_overlap"]
+    s = [f"<h2>External test: {_e(name)}</h2>",
+         f"<p>Images with <code>{_e(info['column'])}</code> = {_e(', '.join(info['values']))} are held out of every "
+         f"train, validation and cross-validation test split, and each trained run is tested on them as a local check. "
+         f"{ext['images']} images in {ext['groups']} groups are held out. Every observer who also appears in them "
+         f"(matched on {_e(', '.join(info['group_columns']))}) was removed from the training side: "
+         f"{rem['images']} images in {rem['groups']} groups.</p>"]
+    classes = sorted(set(ext["by_class"]) | set(rem["by_class"]))
+    if classes:
+        s.append(_table(["Class", "Held-out images", "Held-out groups", "Removed from training: images", "groups"],
+                        [[_e(c), ext["by_class"].get(c, {}).get("images", 0), ext["by_class"].get(c, {}).get("groups", 0),
+                          rem["by_class"].get(c, {}).get("images", 0), rem["by_class"].get(c, {}).get("groups", 0)]
+                         for c in classes]))
+    if not metrics_path.exists():
+        s.append("<p class='meta'>No external results yet.</p>")
+        return s
+    m = pd.read_csv(metrics_path)
+    s.append(f"<p><b>Groups are small for some genera</b> (⚠ marks fewer than {SMALL_GROUPS} groups). Results on this "
+             "set describe how the models did on these photos; they are not precise estimates, and per-class numbers "
+             "for small classes should not be over-interpreted.</p>")
+    for attribute, g in m.groupby("attribute", sort=False):
+        overall = g[g["class"] == "ALL"].groupby(["arch", "model"], sort=False)
+        s.append(f"<h3>{_e(attribute)}: overall</h3>")
+        s.append(_table(["Model", "Runs", "Images", "Groups", "Accuracy", "Macro-F1"],
+                        [[_e(model), len(r), int(r["n_images"].iloc[0]), int(r["n_groups"].iloc[0]),
+                          _pm(r["accuracy"].mean(), r["accuracy"].std()), _pm(r["macro_f1"].mean(), r["macro_f1"].std())]
+                         for (arch, model), r in overall]))
+        per = g[g["class"] != "ALL"].groupby(["arch", "model", "class"], sort=False)
+        rows = []
+        for (arch, model, cls), r in per:
+            n_groups = int(r["n_groups"].iloc[0])
+            small = " ⚠" if n_groups < SMALL_GROUPS else ""
+            rows.append([_e(model), _e(cls), int(r["n_images"].iloc[0]), f"{n_groups}{small}",
+                         _pm(r["recall"].mean(), r["recall"].std()), _pm(r["f1"].mean(), r["f1"].std())])
+        s.append(f"<h3>{_e(attribute)}: per class</h3>")
+        s.append(_table(["Model", "Class", "Images", "Groups", "Recall", "F1"], rows))
+    s.append("<p class='meta'>Per-run rows: external_metrics.csv; predictions: predictions_external/; confusion "
+             "matrices: confusion_matrices_external/.</p>")
+    return s
+
+
 def write_report(cfg, out_dir, ranked, sensitivity):
     out_dir = Path(out_dir)
     summary = pd.read_csv(out_dir / "summary.csv")
@@ -332,6 +386,7 @@ def write_report(cfg, out_dir, ranked, sensitivity):
              "(about 1.4 GFLOPs for ViT-B/16), so ViT is slightly undercounted.</p>")
 
     s.extend(source_sections(cfg, out_dir))
+    s.extend(external_section(cfg, out_dir))
 
     # statistics
     s.append("<h2>Statistical tests</h2>")
