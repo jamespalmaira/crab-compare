@@ -139,47 +139,95 @@ def crab_labels(rows, attribute):
 
 # ---------------------------------------------------------------- splitting
 
-def _two_way(crab_ids, labels, frac, seed):
-    """Split crabs into (rest, held_out), stratified when every class allows it."""
-    try:
-        rest, held, _, _ = train_test_split(crab_ids, labels, test_size=frac,
-                                            random_state=seed, stratify=labels)
-        return sorted(rest), sorted(held), True
-    except ValueError as e:
-        log.warning("Stratified split not possible (%s); falling back to a random crab split", e)
-        rest, held = train_test_split(crab_ids, test_size=frac, random_state=seed)
-        return sorted(rest), sorted(held), False
+GENUS_ONLY = "(genus only)"
+OTHER = "(other)"
 
 
-def make_split(rows, attribute, strategy, ratios, n_folds, seed):
+def _mode(values):
+    return values.value_counts().sort_index().idxmax()
+
+
+def crab_finer(rows, finer):
+    """One finer value per crab (e.g. its species); blank -> '(genus only)'."""
+    values = rows[finer].where(rows[finer] != "", GENUS_ONLY)
+    return rows.assign(_finer=values).groupby("crab_id")["_finer"].agg(_mode).sort_index()
+
+
+def crab_strata(rows, attribute, finer, min_groups):
+    """Per crab: its label (e.g. genus) and a stratum '<label> / <finer>' (e.g. '<genus> / <species>').
+
+    A stratum with fewer than `min_groups` crabs is folded into the largest stratum of the
+    same label that has enough, or into '<label> / (other)' if none has. So every stratum
+    can be stratified on, and the label is never mixed across strata.
+    """
+    labels = crab_labels(rows, attribute)
+    fine = crab_finer(rows, finer).reindex(labels.index)
+    pairs = {c: (labels[c], fine[c]) for c in labels.index}
+    counts = pd.Series(list(pairs.values())).value_counts()
+    target = {}
+    for label in sorted(set(labels)):
+        keys = sorted((k for k in counts.index if k[0] == label), key=lambda k: (-counts[k], k[1]))
+        big = [k for k in keys if counts[k] >= min_groups]
+        for k in keys:
+            target[k] = k if counts[k] >= min_groups else (big[0] if big else (label, OTHER))
+    strata = pd.Series({c: " / ".join(target[p]) for c, p in pairs.items()}).sort_index()
+    return labels, fine, strata
+
+
+def _two_way(crab_ids, options, frac, seed):
+    """Split crabs into (rest, held_out, level). `options` are (level, per-crab key) pairs tried
+    in order (e.g. species strata, then genus); level is 'none' for a random split."""
+    for level, keys in options:
+        y = [keys[c] for c in crab_ids]
+        try:
+            rest, held = train_test_split(crab_ids, test_size=frac, random_state=seed, stratify=y)
+            return sorted(rest), sorted(held), level
+        except ValueError as e:
+            log.warning("Stratifying on %s not possible (%s); trying the next option", level, e)
+    log.warning("Falling back to a random crab split")
+    rest, held = train_test_split(crab_ids, test_size=frac, random_state=seed)
+    return sorted(rest), sorted(held), "none"
+
+
+def make_split(rows, attribute, strategy, ratios, n_folds, seed, stratify_by=None, min_stratum_groups=10):
+    """Group-safe split over crab_id. With `stratify_by` (a finer column, e.g. species for the
+    genus label), each step stratifies on '<label> / <finer>' strata, falling back to the label
+    and then to a random split."""
     if rows.empty:
         raise SplitError(f"{attribute}: no labeled rows to split")
+    if stratify_by and stratify_by not in rows.columns:
+        raise SplitError(f"{attribute}: stratify_by column {stratify_by!r} is not in labels.csv")
     labels = crab_labels(rows, attribute)
-    crab_ids, y = list(labels.index), list(labels.values)
+    options, strata = [(attribute, labels)], None
+    if stratify_by:
+        _, _, strata = crab_strata(rows, attribute, stratify_by, min_stratum_groups)
+        options.insert(0, (f"{attribute}/{stratify_by}", strata))
+    crab_ids = list(labels.index)
     train_r, val_r, test_r = ratios
     val_frac = val_r / (train_r + val_r)
-    folds, stratified = [], True
+    folds, levels = [], []
 
     if strategy == "holdout":
-        trval, test, s1 = _two_way(crab_ids, y, test_r, seed)
-        train, val, s2 = _two_way(trval, [labels[c] for c in trval], val_frac, seed)
+        trval, test, l1 = _two_way(crab_ids, options, test_r, seed)
+        train, val, l2 = _two_way(trval, options, val_frac, seed)
         folds.append({"train": train, "val": val, "test": test})
-        stratified = s1 and s2
+        levels += [l1, l2]
     elif strategy == "kfold":
         if len(crab_ids) < n_folds:
             raise SplitError(f"{attribute}: {len(crab_ids)} crabs is fewer than n_folds={n_folds}")
-        if labels.value_counts().min() >= n_folds:
-            splitter = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed)
+        usable = [(level, keys) for level, keys in options if keys.value_counts().min() >= n_folds]
+        if usable:
+            level, keys = usable[0]
+            splitter, y = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=seed), list(keys.values)
         else:
-            log.warning("%s: some class has fewer than %d crabs; using unstratified KFold",
-                        attribute, n_folds)
-            splitter = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
-            stratified = False
+            log.warning("%s: some class has fewer than %d crabs; using unstratified KFold", attribute, n_folds)
+            level, splitter, y = "none", KFold(n_splits=n_folds, shuffle=True, random_state=seed), None
+        levels.append(level)
         for k, (trval_idx, test_idx) in enumerate(splitter.split(crab_ids, y)):
             trval = [crab_ids[i] for i in trval_idx]
-            train, val, s = _two_way(trval, [labels[c] for c in trval], val_frac, seed + k)
+            train, val, lv = _two_way(trval, options, val_frac, seed + k)
             folds.append({"train": train, "val": val, "test": sorted(crab_ids[i] for i in test_idx)})
-            stratified = stratified and s
+            levels.append(lv)
     else:
         raise ValueError(f"Unknown split strategy {strategy!r}")
 
@@ -190,7 +238,11 @@ def make_split(rows, attribute, strategy, ratios, n_folds, seed):
         "ratios": list(ratios),
         "n_folds": n_folds if strategy == "kfold" else None,
         "classes": sorted(labels.unique()),
-        "stratified": stratified,
+        "stratified": "none" not in levels,
+        "stratify_by": stratify_by,
+        "min_stratum_groups": min_stratum_groups if stratify_by else None,
+        "stratified_on": sorted(set(levels)),
+        "strata": {k: int(v) for k, v in strata.value_counts().sort_index().items()} if strata is not None else None,
         "n_crabs": len(crab_ids),
         "folds": folds,
     }
@@ -234,7 +286,8 @@ def get_split(cfg, rows, attribute):
         log.info("Reusing saved split %s", path)
         return split
 
-    split = make_split(rows, attribute, s["strategy"], s["ratios"], s["n_folds"], s["seed"])
+    stratify_by, min_stratum = stratify_settings(s, attribute)
+    split = make_split(rows, attribute, s["strategy"], s["ratios"], s["n_folds"], s["seed"], stratify_by, min_stratum)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(split, f, indent=1)
@@ -242,11 +295,19 @@ def get_split(cfg, rows, attribute):
     return split
 
 
+def stratify_settings(s, attribute):
+    """(finer stratification column or None, min_stratum_groups) for one attribute from config split."""
+    stratify_by = (s.get("stratify_by") or {}).get(attribute)
+    return stratify_by, (int(s.get("min_stratum_groups", 10)) if stratify_by else None)
+
+
 def _check_matches(split, rows, attribute, s, path):
     """A saved split must match the current config and labels; never regenerate silently."""
+    stratify_by, min_stratum = stratify_settings(s, attribute)
     expected = {"attribute": attribute, "strategy": s["strategy"], "seed": s["seed"],
                 "ratios": list(s["ratios"]),
-                "n_folds": s["n_folds"] if s["strategy"] == "kfold" else None}
+                "n_folds": s["n_folds"] if s["strategy"] == "kfold" else None,
+                "stratify_by": stratify_by, "min_stratum_groups": min_stratum}
     diffs = {k: (split.get(k), v) for k, v in expected.items() if split.get(k) != v}
     saved_crabs = {c for fold in split["folds"][:1] for name in SPLIT_SETS for c in fold[name]}
     current_crabs = set(rows["crab_id"])

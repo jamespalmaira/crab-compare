@@ -33,6 +33,14 @@ split:
                                # fold and val is carved from the rest at val/(train+val).
   n_folds: 5
   seed: 42                # split seed; separate from the training seeds below
+  # Stratify an attribute on a finer column while the label stays coarse: the
+  # genus split is stratified on genus/species, so every fold keeps each
+  # genus's species mix. Groups identified only to genus form their own
+  # stratum. A stratum with fewer than min_stratum_groups crab_id groups is
+  # folded into its genus's largest stratum; 10 groups is enough for a
+  # species to land in train, val and test of every fold at 70/15/15 or 5 folds.
+  stratify_by: {genus: species}
+  min_stratum_groups: 10
   dir: splits             # saved next to labels.csv, e.g. data/splits/
 
 augmentation:             # training only; identical for every model

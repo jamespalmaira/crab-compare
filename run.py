@@ -22,7 +22,8 @@ import torch
 
 from src.config import ConfigError, load_config
 from src.analyze import analyze
-from src.data import ATTRIBUTES, SPLIT_SETS, SplitError, get_split, load_labels, prepare_attribute, source_balance
+from src.data import (ATTRIBUTES, SPLIT_SETS, SplitError, crab_finer, get_split, load_labels, prepare_attribute,
+                      source_balance)
 from src.select import write_ranking
 from src.evaluate import evaluate_run
 from src.report import merge_rows, write_report, write_tables
@@ -128,8 +129,11 @@ def select_attributes(cfg, df, attributes, out_dir):
 def summarise_split(split, rows):
     attr = split["attribute"]
     crab_class = rows.groupby("crab_id")[attr].first()
-    log.info("%s: %d crabs, %d images, classes %s, strategy=%s, stratified=%s",
-             attr, split["n_crabs"], len(rows), split["classes"], split["strategy"], split["stratified"])
+    finer = split.get("stratify_by")
+    log.info("%s: %d crabs, %d images, classes %s, strategy=%s, stratified=%s%s",
+             attr, split["n_crabs"], len(rows), split["classes"], split["strategy"], split["stratified"],
+             f" on {split['stratified_on']}" if finer else "")
+    crab_fine = crab_finer(rows, finer) if finer else None
     for k, fold in enumerate(split["folds"]):
         parts = []
         for name in SPLIT_SETS:
@@ -138,6 +142,13 @@ def summarise_split(split, rows):
             per_class = dict(sorted(Counter(crab_class[ids]).items()))
             parts.append(f"{name} {len(ids)} crabs/{n_img} imgs {per_class}")
         log.info("  fold %d: %s", k, " | ".join(parts))
+        if finer:  # each class's composition by the finer key (groups per species), per set
+            for cls in split["classes"]:
+                comp = []
+                for name in SPLIT_SETS:
+                    ids = [c for c in fold[name] if crab_class[c] == cls]
+                    comp.append(f"{name} " + ", ".join(f"{v} {n}" for v, n in sorted(Counter(crab_fine[ids]).items())))
+                log.info("    %s by %s: %s", cls, finer, " | ".join(comp))
 
 
 def main(argv=None):
