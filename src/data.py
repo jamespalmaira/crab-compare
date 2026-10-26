@@ -90,6 +90,32 @@ def attribute_usage(rows, attribute, min_groups_per_class):
     return usage
 
 
+def source_balance(rows, attribute, threshold):
+    """Per class: image share of its largest source; flagged when above the threshold.
+
+    Returns an empty frame when labels.csv has no source column. A flagged
+    class can be learned from source-specific cues (camera, background,
+    framing) instead of the crab itself.
+    """
+    if "source" not in rows.columns or rows.empty:
+        return pd.DataFrame()
+    counts = rows.groupby([attribute, "source"]).size().unstack(fill_value=0)
+    out = []
+    for cls, per_source in counts.iterrows():
+        total = int(per_source.sum())
+        top = per_source.idxmax()
+        share = float(per_source.max() / total)
+        out.append({"attribute": attribute, "class": cls, "n_images": total,
+                    "n_sources": int((per_source > 0).sum()), "top_source": top, "top_share": share,
+                    "flagged": share > threshold, "threshold": threshold,
+                    "images_by_source": json.dumps({k: int(v) for k, v in per_source.items() if v > 0})})
+    balance = pd.DataFrame(out)
+    for _, r in balance[balance["flagged"]].iterrows():
+        log.warning("%s class %s: %.0f%% of its %d images come from source %r (above %.0f%%)", attribute,
+                    r["class"], 100 * r["top_share"], r["n_images"], r["top_source"], 100 * threshold)
+    return balance
+
+
 def prepare_attribute(df, attribute, min_groups_per_class):
     """Filter to labeled rows, log what is used, and return (rows, usage)."""
     rows = attribute_rows(df, attribute)
@@ -264,6 +290,7 @@ class CrabDataset(Dataset):
         self.image_paths = list(rows["image_path"])  # as written in labels.csv
         self.paths = [Path(image_root) / p for p in self.image_paths]
         self.crab_ids = list(rows["crab_id"])
+        self.sources = list(rows["source"]) if "source" in rows.columns else None
         class_to_idx = {c: i for i, c in enumerate(classes)}
         self.targets = [class_to_idx[v] for v in rows[attribute]]
         self.transform = transform

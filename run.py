@@ -16,14 +16,15 @@ import warnings
 from collections import Counter
 from pathlib import Path
 
+import pandas as pd
 import torch
 
 from src.config import ConfigError, load_config
 from src.analyze import analyze
-from src.data import ATTRIBUTES, SPLIT_SETS, SplitError, get_split, load_labels, prepare_attribute
+from src.data import ATTRIBUTES, SPLIT_SETS, SplitError, get_split, load_labels, prepare_attribute, source_balance
 from src.select import write_ranking
 from src.evaluate import evaluate_run
-from src.report import write_report, write_tables
+from src.report import merge_rows, write_report, write_tables
 from src.train import GPUOutOfMemory, NonFiniteLoss, limit_gpu_memory, resolve_device, train_one
 
 log = logging.getLogger("run")
@@ -103,14 +104,20 @@ def save_attribute_usage(out_dir, usages):
 def select_attributes(cfg, df, attributes, out_dir):
     """Labeled rows and the saved split for every usable attribute; skipped ones are logged."""
     min_groups = cfg["data"].get("min_groups_per_class", 30)
-    splits, usages = {}, {}
+    threshold = cfg["data"].get("source_dominance_threshold", 0.8)
+    splits, usages, balances = {}, {}, []
     for attr in attributes:
         rows, usages[attr] = prepare_attribute(df, attr, min_groups)
         if usages[attr]["skip_reason"]:
             continue
+        balances.append(source_balance(rows, attr, threshold))
         splits[attr] = (rows, get_split(cfg, rows, attr))
         summarise_split(splits[attr][1], rows)
     save_attribute_usage(out_dir, usages)
+    balances = [b for b in balances if not b.empty]
+    if balances:
+        merge_rows(Path(out_dir) / "source_balance.csv", pd.concat(balances, ignore_index=True),
+                   keys=["attribute", "class"])
     if not splits:
         raise ConfigError(f"No attribute has enough labels to train ({attributes}); see the skip messages above")
     return splits
@@ -169,7 +176,7 @@ def main(argv=None):
                  cfg["run_name"], out_dir, models, seeds, cfg["training"]["epochs"],
                  cfg["training"]["pretrained"], cfg["training"]["amp"])
 
-        run_rows, class_rows = [], []
+        run_rows, class_rows, source_rows = [], [], []
         for attr, (rows, split) in splits.items():
             folds = args.folds if args.folds is not None else range(len(split["folds"]))
             for arch in models:
@@ -178,11 +185,12 @@ def main(argv=None):
                         raise ConfigError(f"--folds {fold}: split has {len(split['folds'])} fold(s)")
                     for seed in seeds:
                         res = train_one(cfg, arch, rows, split, fold, seed, out_dir, device)
-                        row, per_class = evaluate_run(res, cfg, out_dir, device)
+                        row, per_class, per_source = evaluate_run(res, cfg, out_dir, device)
                         run_rows.append(row)
                         class_rows.append(per_class)
+                        source_rows.append(per_source)
                         # write after every run so finished results survive a later failure
-                        write_tables(out_dir, run_rows, class_rows, model_order=list(cfg["models"]))
+                        write_tables(out_dir, run_rows, class_rows, list(cfg["models"]), source_rows)
                         del res
                         gc.collect()
                         torch.cuda.empty_cache()

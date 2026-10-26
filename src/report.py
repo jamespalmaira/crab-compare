@@ -57,10 +57,27 @@ def summarise(per_seed, model_order=None):
     return summary.reset_index(drop=True)
 
 
-def write_tables(out_dir, run_rows, class_rows, model_order=None):
+def summarise_sources(per_source, model_order=None):
+    """Mean and std of per-source test accuracy and macro-F1 across runs."""
+    g = per_source.groupby(["attribute", "arch", "model", "source"], sort=False)
+    summary = g.agg(n_runs=("seed", "size"), n_images_mean=("n_images", "mean"),
+                    accuracy_mean=("accuracy", "mean"), accuracy_std=("accuracy", "std"),
+                    macro_f1_mean=("macro_f1", "mean"), macro_f1_std=("macro_f1", "std")).reset_index()
+    if model_order:
+        summary["_order"] = summary["arch"].map({a: i for i, a in enumerate(model_order)})
+        summary = summary.sort_values(["attribute", "_order", "source"], kind="stable").drop(columns="_order")
+    return summary.reset_index(drop=True)
+
+
+def write_tables(out_dir, run_rows, class_rows, model_order=None, source_rows=None):
     out_dir = Path(out_dir)
     per_seed = merge_rows(out_dir / "per_seed.csv", run_rows)
     merge_rows(out_dir / "per_class.csv", pd.concat(class_rows, ignore_index=True), keys=RUN_KEYS + ["class"])
+    source_rows = [s for s in (source_rows or []) if not s.empty]
+    if source_rows:
+        per_source = merge_rows(out_dir / "per_source.csv", pd.concat(source_rows, ignore_index=True),
+                                keys=RUN_KEYS + ["source"])
+        summarise_sources(per_source, model_order).to_csv(out_dir / "source_summary.csv", index=False)
     summary = summarise(per_seed, model_order)
     summary.to_csv(out_dir / "summary.csv", index=False)
     return per_seed, summary
@@ -198,6 +215,62 @@ def _p(p):
     return "&lt; 0.0001" if p < 1e-4 else f"{p:.4f}"
 
 
+def data_section(out_dir):
+    """Which attributes were trained and which were skipped, from attributes.json."""
+    path = Path(out_dir) / "attributes.json"
+    if not path.exists():
+        return []
+    usage = json.loads(path.read_text(encoding="utf-8"))
+    rows = []
+    for attr, u in usage.items():
+        status = ("<span class='fail'>⚠ skipped</span>" if u["skip_reason"] else "<span class='pass'>✓ used</span>")
+        groups = ", ".join(f"{_e(k)} {v}" for k, v in u["groups_per_class"].items()) or "–"
+        rows.append([_e(attr), status, u["n_images"], u["n_groups"], u["n_classes"], groups,
+                     _e(u["skip_reason"] or "")])
+    min_groups = next(iter(usage.values()))["min_groups_per_class"] if usage else "?"
+    return ["<h2>Data used</h2><p>Each attribute uses only the rows labeled for it. Groups are distinct "
+            "<code>crab_id</code> values (an individual, observer, observation or filename ID, not a verified "
+            f"individual). An attribute is skipped with fewer than 2 classes or any class below {min_groups} groups.</p>",
+            _table(["Attribute", "Status", "Images", "Groups", "Classes", "Groups per class", "Reason"], rows)]
+
+
+def source_sections(cfg, out_dir):
+    """Per-source test results and the source-dominance check, when labels.csv has a source column."""
+    out_dir = Path(out_dir)
+    summary_path, balance_path = out_dir / "source_summary.csv", out_dir / "source_balance.csv"
+    if not summary_path.exists() and not balance_path.exists():
+        return ["<h2>Results by source</h2><p class='meta'>labels.csv has no <code>source</code> column, "
+                "so there are no per-source results.</p>"]
+    s = []
+    if summary_path.exists():
+        src = pd.read_csv(summary_path)
+        s.append("<h2>Results by source</h2><p>Test accuracy and macro-F1 per source, mean ± std over runs. "
+                 "Macro-F1 averages the classes present in that source's test images; a source with few test "
+                 "images gives noisy numbers.</p>")
+        for attribute, g in src.groupby("attribute", sort=False):
+            s.append(f"<h3>{_e(attribute)}</h3>")
+            s.append(_table(["Model", "Source", "Runs", "Test images (mean)", "Accuracy", "Macro-F1"],
+                            [[_e(r["model"]), _e(r["source"]), int(r["n_runs"]), _num(r["n_images_mean"], 1),
+                              _pm(r["accuracy_mean"], r["accuracy_std"]), _pm(r["macro_f1_mean"], r["macro_f1_std"])]
+                             for _, r in g.iterrows()]))
+    if balance_path.exists():
+        bal = pd.read_csv(balance_path)
+        flagged = bal[bal["flagged"]]
+        thr = float(bal["threshold"].iloc[0]) if len(bal) else cfg["data"].get("source_dominance_threshold", 0.8)
+        s.append(f"<h3>Source balance</h3><p>Classes where one source supplies more than {thr:.0%} of the images "
+                 f"are flagged: a model can learn that source's camera, background or framing instead of the crab. "
+                 f"<b>{len(flagged)} of {len(bal)} class(es) flagged.</b></p>")
+        rows = []
+        for _, r in bal.iterrows():
+            flag = "<span class='fail'>⚠ flagged</span>" if r["flagged"] else "ok"
+            by_source = ", ".join(f"{_e(k)} {v}" for k, v in json.loads(r["images_by_source"]).items())
+            rows.append([_e(r["attribute"]), _e(r["class"]), r["n_images"], _e(r["top_source"]),
+                         f"{100 * r['top_share']:.0f}%", flag, by_source])
+        s.append(_table(["Attribute", "Class", "Images", "Largest source", "Its share", "Flag", "Images by source"],
+                        rows))
+    return s
+
+
 def write_report(cfg, out_dir, ranked, sensitivity):
     out_dir = Path(out_dir)
     summary = pd.read_csv(out_dir / "summary.csv")
@@ -225,6 +298,8 @@ def write_report(cfg, out_dir, ranked, sensitivity):
              f"{_e(first['amp'])} · pretrained {_e(first['pretrained'])}<br>GPU {_e(first['gpu'])} · torch "
              f"{_e(first['torch'])} · CUDA {_e(first['cuda'])} · cuDNN {_e(first['cudnn'])} · timm "
              f"{_e(first['timm'])}</p></div>")
+
+    s.extend(data_section(out_dir))
 
     # comparison table and charts, per attribute
     s.append("<h2>Comparison</h2><p>Test-set metrics, mean ± std over "
@@ -255,6 +330,8 @@ def write_report(cfg, out_dir, ranked, sensitivity):
                  "</div></div>")
     s.append("<p class='meta'>GFLOPs from thop (2 × MACs); thop does not count ViT's attention matrix products "
              "(about 1.4 GFLOPs for ViT-B/16), so ViT is slightly undercounted.</p>")
+
+    s.extend(source_sections(cfg, out_dir))
 
     # statistics
     s.append("<h2>Statistical tests</h2>")
@@ -324,8 +401,9 @@ def write_report(cfg, out_dir, ranked, sensitivity):
                      f"<a href='{_e(cm)}'>PNG</a> · <a href='{_e(cm[:-4])}.csv'>CSV</a> · "
                      f"<a href='{_e(_rel(r['predictions'], out_dir))}'>predictions</a>"])
     s.append(_table(["Attribute", "Model", "Fold", "Seed", "Test macro-F1", "Files"], rows))
-    s.append("<p class='meta'>Also in this folder: per_seed.csv, per_class.csv, summary.csv, stats.json, mcnemar.csv, "
-             "model_profile.csv, ranking.csv, ranking.md, onnx/, checkpoints/, logs/.</p>")
+    s.append("<p class='meta'>Also in this folder: per_seed.csv, per_class.csv, summary.csv, attributes.json, "
+             "per_source.csv, source_summary.csv and source_balance.csv (when there is a source column), stats.json, "
+             "mcnemar.csv, model_profile.csv, ranking.csv, ranking.md, onnx/, checkpoints/, logs/.</p>")
 
     page = ("<!doctype html><html lang='en'><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width, initial-scale=1'>"

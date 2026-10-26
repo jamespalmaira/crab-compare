@@ -17,6 +17,9 @@ data:
   # message) if it has fewer than 2 classes, or any class has fewer than this
   # many distinct crab_id groups.
   min_groups_per_class: 30
+  # With a source column in labels.csv, flag any class where one source
+  # supplies more than this share of the images.
+  source_dominance_threshold: 0.8
 
 split:
   strategy: holdout       # holdout (single 70/15/15 split) or kfold (crab-level CV)

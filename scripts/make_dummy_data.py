@@ -50,9 +50,11 @@ def make_dummy_dataset(out_dir, n_species=3, crabs_per_species=10, photos_per_cr
         sp = c // crabs_per_species
         crab_id = f"crab_{c:03d}"
         source = None
-        if sources:
-            # with skew_source, 9 in 10 crabs of the first species come from the first source
-            source = sources[0] if skew_source and sp == 0 and c % 10 else sources[c % len(sources)]
+        if sources and skew_source and sp == 0:
+            # 9 in 10 crabs of the first species come from the first source
+            source = sources[0] if c % 10 else sources[1 % len(sources)]
+        elif sources:
+            source = sources[c % len(sources)]
         for p in range(photos_per_crab):
             img = rng.integers(0, 256, (size, size, 3), dtype=np.uint8)
             im = Image.fromarray(img)

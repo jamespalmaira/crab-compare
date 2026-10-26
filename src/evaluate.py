@@ -19,7 +19,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import seaborn as sns  # noqa: E402
 import torch  # noqa: E402
-from sklearn.metrics import confusion_matrix, precision_recall_fscore_support, roc_auc_score  # noqa: E402
+from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_support, roc_auc_score  # noqa: E402
 
 from src.models import param_count  # noqa: E402
 from src.train import predict, run_name  # noqa: E402
@@ -116,12 +116,31 @@ def save_predictions(path, dataset, y_true, probs, classes):
         "true_label": [classes[i] for i in y_true],
         "pred_label": [classes[i] for i in probs.argmax(1)],
     })
+    if dataset.sources is not None:
+        df.insert(2, "source", dataset.sources)
     for i, c in enumerate(classes):
         df[f"prob_{c}"] = probs[:, i]
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
     return df
+
+
+def per_source_metrics(pred_df, classes):
+    """Test accuracy and macro-F1 per source (macro over the classes present in that source)."""
+    if "source" not in pred_df.columns:
+        return pd.DataFrame()
+    rows = []
+    for source, g in pred_df.groupby("source", sort=True):
+        present = sorted(set(g["true_label"]), key=classes.index)
+        rows.append({
+            "source": source, "n_images": int(len(g)), "n_groups": int(g["crab_id"].nunique()),
+            "n_classes_present": len(present),
+            "accuracy": float((g["true_label"] == g["pred_label"]).mean()),
+            "macro_f1": float(f1_score(g["true_label"], g["pred_label"], labels=present, average="macro",
+                                       zero_division=0)),
+        })
+    return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------- speed and size
@@ -159,7 +178,8 @@ def evaluate_run(result, cfg, out_dir, device):
     probs, y_true = predict(model, result.loaders["test"], device, info["arch"])
     summary, per_class, cm = compute_metrics(y_true, probs, classes)
     pred_path = predictions_path(out_dir, info["arch"], info["attribute"], info["seed"], info["fold"])
-    save_predictions(pred_path, result.datasets["test"], y_true, probs, classes)
+    pred_df = save_predictions(pred_path, result.datasets["test"], y_true, probs, classes)
+    per_source = per_source_metrics(pred_df, classes)
 
     name = run_name(info["arch"], info["fold"], info["seed"])
     stem = Path(out_dir) / "confusion_matrices" / info["attribute"] / name
@@ -190,11 +210,15 @@ def evaluate_run(result, cfg, out_dir, device):
         "timm": info["timm"], "checkpoint": info["checkpoint"], "log": info["log"],
         "confusion_matrix": str(stem.with_suffix(".png")), "predictions": str(pred_path),
     }
-    per_class.insert(0, "seed", info["seed"])
-    per_class.insert(0, "fold", info["fold"])
-    per_class.insert(0, "arch", info["arch"])
-    per_class.insert(0, "attribute", info["attribute"])
+    keys = {"attribute": info["attribute"], "arch": info["arch"], "fold": info["fold"], "seed": info["seed"]}
+    per_class = per_class.assign(**keys)[list(keys) + list(per_class.columns)]
+    if not per_source.empty:
+        per_source = per_source.assign(model=info["model"], **keys)[
+            list(keys) + ["model"] + list(per_source.columns)]
     log.info("%s test: acc %.4f macro-F1 %.4f ROC-AUC %.4f | latency GPU %.2f ms CPU %.2f ms | %.1fM params %.1f MB",
              name, summary["accuracy"], summary["macro_f1"], summary["roc_auc_ovr"], latency_gpu, latency_cpu,
              row["params_m"], row["model_size_mb"])
-    return row, per_class
+    for _, s in per_source.iterrows():
+        log.info("%s test, source %s: %d images, acc %.4f macro-F1 %.4f", name, s["source"], s["n_images"],
+                 s["accuracy"], s["macro_f1"])
+    return row, per_class, per_source
