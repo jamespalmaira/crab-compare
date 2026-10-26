@@ -31,8 +31,12 @@ def resolve_taxon(client, base, name, rank="species"):
     results = data.get("results", [])
     target = name.strip().lower()
     out = {"inat_taxon_id": "", "inat_name": "", "inat_rank": "", "inat_status": "not_found", "inat_note": ""}
-    exact = [t for t in results if str(t.get("name", "")).lower() == target]
-    synonym = [t for t in results if str(t.get("matched_term", "")).lower() == target and t not in exact]
+
+    def preferred(hits):  # homonyms exist (Charybdis is also a plant section): wanted rank and animals first
+        return sorted(hits, key=lambda t: (t.get("rank") not in RANKS[rank],
+                                           t.get("iconic_taxon_name", "Animalia") in ("Plantae", "Fungi")))
+    exact = preferred([t for t in results if str(t.get("name", "")).lower() == target])
+    synonym = preferred([t for t in results if str(t.get("matched_term", "")).lower() == target and t not in exact])
     for status, hits in (("exact", exact), ("synonym", synonym)):
         if hits:
             t = hits[0]

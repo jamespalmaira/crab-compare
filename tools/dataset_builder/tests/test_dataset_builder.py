@@ -590,6 +590,21 @@ class GenusTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build.load_species(path)
 
+    def test_homonym_resolves_to_the_animal_genus(self):
+        # iNaturalist lists the plant section Charybdis before the crab genus
+        results = {"results": [
+            {"id": 1113129, "name": "Charybdis", "rank": "section", "iconic_taxon_name": "Plantae"},
+            {"id": 121452, "name": "Charybdis", "rank": "genus", "iconic_taxon_name": "Animalia"},
+            {"id": 1241892, "name": "Charybdis", "rank": "subgenus", "iconic_taxon_name": "Animalia"},
+            {"id": 469049, "name": "Charybdis feriata", "rank": "species", "iconic_taxon_name": "Animalia"}]}
+        client = FakeClient({"/taxa": results})
+        g = inat.resolve_taxon(client, INAT, "Charybdis", "genus")
+        self.assertEqual((g["inat_taxon_id"], g["inat_status"]), (121452, "exact"))
+        s = inat.resolve_taxon(client, INAT, "Charybdis feriata", "species")
+        self.assertEqual((s["inat_taxon_id"], s["inat_status"]), (469049, "exact"))
+        plant_only = FakeClient({"/taxa": {"results": results["results"][:1]}})
+        self.assertEqual(inat.resolve_taxon(plant_only, INAT, "Charybdis", "genus")["inat_status"], "higher_rank")
+
     def test_id_rank_from_taxon_rank(self):
         self.assertEqual((inat.id_rank("genus"), inat.id_rank("subspecies"), inat.id_rank("family")),
                          ("genus", "species", ""))
