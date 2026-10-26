@@ -16,7 +16,7 @@ Out of scope for this bench: the mobile app, the multi-task model, decision-supp
 | GitHub account and private repo | Done. Remote `origin` is the private `crab-compare` repo; `main` is pushed. |
 | Python environment | Done. `.venv` with Python 3.10.19, torch 2.14.1+cu126, CUDA available (True). GPU: NVIDIA GeForce GTX 1650, 4 GB VRAM. |
 | Environment verification (`verify_env.py`) | Done. All five models and all package imports pass. |
-| Code (`src/`, `run.py`, `config.yaml`) | Build steps 1–4 done and tested on dummy data only: crab-level split (holdout or 5-fold), model factory, training loop, evaluation, and `per_seed.csv` / `per_class.csv` / `summary.csv`. Steps 5–7 (statistics, Grad-CAM, ONNX, ranking, report) not started. |
+| Code (`src/`, `run.py`, `config.yaml`) | Build steps 1–7 done and tested on dummy data only (holdout and 5-fold, 1 epoch, 2 seeds, random weights): crab-level split, model factory, training loop, evaluation with saved predictions, Friedman/McNemar (Holm), Grad-CAM check, ONNX export and latency, thop FLOPs, weighted ranking with sensitivity check, and `report.html`. `python run.py --analyze-only` re-runs steps 5–7 on an existing results folder. Not yet run with pretrained weights or real data. |
 | Crab dataset | Not collected or labeled yet. |
 | Labeling guide and expert | Not confirmed. |
 

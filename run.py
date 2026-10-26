@@ -22,7 +22,7 @@ from src.analyze import analyze
 from src.data import ATTRIBUTES, SPLIT_SETS, SplitError, attribute_rows, get_split, load_labels
 from src.select import write_ranking
 from src.evaluate import evaluate_run
-from src.report import write_tables
+from src.report import write_report, write_tables
 from src.train import GPUOutOfMemory, NonFiniteLoss, limit_gpu_memory, resolve_device, train_one
 
 log = logging.getLogger("run")
@@ -64,6 +64,8 @@ def run_analysis(cfg, out_dir, device):
     for s in sens:
         log.info("sensitivity %s -> winner %s%s", s["weights"], s["winner_model"], " (CHANGED)" if s["changed"] else "")
     log.info("Wrote ranking.csv and ranking.md in %s", out_dir)
+
+    log.info("Wrote %s", write_report(cfg, out_dir, ranked, sens))
     return ranked, sens
 
 
