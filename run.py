@@ -18,6 +18,7 @@ from pathlib import Path
 import torch
 
 from src.config import ConfigError, load_config
+from src.analyze import analyze
 from src.data import ATTRIBUTES, SPLIT_SETS, SplitError, attribute_rows, get_split, load_labels
 from src.evaluate import evaluate_run
 from src.report import write_tables
@@ -39,7 +40,21 @@ def parse_args(argv=None):
     ap.add_argument("--num-workers", type=int, default=None, help="override data.num_workers")
     ap.add_argument("--folds", type=int, nargs="+", default=None, help="only these fold indices (k-fold)")
     ap.add_argument("--splits-only", action="store_true", help="make/check the splits and stop")
+    ap.add_argument("--analyze-only", action="store_true",
+                    help="skip training; run statistics, Grad-CAM, ONNX and FLOPs on results/<run_name>/")
     return ap.parse_args(argv)
+
+
+def run_analysis(cfg, out_dir, device):
+    stats, profile = analyze(cfg, out_dir, device)
+    for attribute, st in stats["attributes"].items():
+        fr = st["friedman"]
+        log.info("%s Friedman over %d %s(s): chi2 %s p %s (%s)", attribute, fr["n_blocks"], fr["block"],
+                 fr["statistic"], fr["p_value"], fr["note"])
+        for r in st["mcnemar"]["pairs"]:
+            log.info("%s McNemar %s vs %s: %d/%d discordant, p raw %.4f, Holm %.4f", attribute, r["model_a"],
+                     r["model_b"], r["a_right_b_wrong"], r["a_wrong_b_right"], r["p_raw"], r["p_holm"])
+    log.info("Wrote stats.json, mcnemar.csv, model_profile.csv, gradcam/ and onnx/ in %s", out_dir)
 
 
 def apply_overrides(cfg, args):
@@ -91,6 +106,15 @@ def main(argv=None):
         if unknown:
             raise ConfigError(f"Models not in config.yaml: {unknown}")
         attributes = cfg["data"]["attributes"] if args.attribute == "all" else [args.attribute]
+        out_dir = Path(cfg.get("results_dir", "results")) / cfg["run_name"]
+
+        if args.analyze_only:
+            if not (out_dir / "per_seed.csv").exists():
+                raise FileNotFoundError(f"No per_seed.csv in {out_dir}; train first or check --run-name")
+            device = resolve_device(cfg)
+            limit_gpu_memory(cfg, device)
+            run_analysis(cfg, out_dir, device)
+            return 0
 
         df = load_labels(cfg["data"]["labels_csv"])
         splits = {}
@@ -103,7 +127,6 @@ def main(argv=None):
 
         device = resolve_device(cfg)
         limit_gpu_memory(cfg, device)
-        out_dir = Path(cfg.get("results_dir", "results")) / cfg["run_name"]
         seeds = cfg["training"]["seeds"]
         log.info("Run %s -> %s | models %s | seeds %s | epochs %d | pretrained %s | amp %s",
                  cfg["run_name"], out_dir, models, seeds, cfg["training"]["epochs"],
@@ -127,15 +150,16 @@ def main(argv=None):
                         del res
                         gc.collect()
                         torch.cuda.empty_cache()
+
+        for r in run_rows:
+            log.info("%-10s %-24s fold %d seed %d | val F1 %.4f (epoch %d/%d) | test acc %.4f macro-F1 %.4f",
+                     r["attribute"], r["arch"], r["fold"], r["seed"], r["best_val_macro_f1"], r["best_epoch"],
+                     r["epochs_trained"], r["accuracy"], r["macro_f1"])
+        log.info("Wrote %s, %s and %s", out_dir / "per_seed.csv", out_dir / "per_class.csv", out_dir / "summary.csv")
+        run_analysis(cfg, out_dir, device)
     except (ConfigError, SplitError, FileNotFoundError, ValueError, GPUOutOfMemory, NonFiniteLoss) as e:
         log.error("%s", e)
         return 2
-
-    for r in run_rows:
-        log.info("%-10s %-24s fold %d seed %d | val F1 %.4f (epoch %d/%d) | test acc %.4f macro-F1 %.4f",
-                 r["attribute"], r["arch"], r["fold"], r["seed"], r["best_val_macro_f1"], r["best_epoch"],
-                 r["epochs_trained"], r["accuracy"], r["macro_f1"])
-    log.info("Wrote %s, %s and %s", out_dir / "per_seed.csv", out_dir / "per_class.csv", out_dir / "summary.csv")
     return 0
 
 

@@ -63,7 +63,15 @@ evaluation:               # on the test set of each run, always fp32
   latency_runs: 50        # timed runs, batch of 1; mean ms per image
   latency_cpu: true       # also time on CPU (GPU is timed when available)
 
-device: auto             # auto (cuda if available, else cpu with a warning), cuda, cpu
+analysis:                 # build step 5, run on a finished results folder
+  stats_alpha: 0.05       # significance level for the Holm-corrected McNemar tests
+  gradcam_images: 8       # test images per model for the Grad-CAM check and overlays
+  gradcam_seed: 0         # which images are sampled
+  onnx_opset: 17
+  onnx_rtol: 0.001        # onnxruntime vs PyTorch output tolerance
+  onnx_atol: 0.0001
+
+device: auto            # auto (cuda if available, else cpu with a warning), cuda, cpu
 
 gpu:
   # Cap PyTorch's share of dedicated VRAM so going over raises a clear
