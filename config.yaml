@@ -18,6 +18,11 @@ data:
   main_attribute: genus
   attributes: [genus, species]
   num_workers: 2
+  # Optional pre-resized image cache (null = off). When set, e.g. 512, every image
+  # whose longer side is above it is resized once (Lanczos) into
+  # data/cache/longer_<N>/ (outside git) and all models read from there; smaller
+  # images are copied unchanged. Augmentation is the same either way.
+  cache_longer_side: null
   # Each attribute uses only the rows labeled for it. It is skipped (with a
   # message) if it has fewer than 2 classes, or any class has fewer than this
   # many distinct crab_id groups.

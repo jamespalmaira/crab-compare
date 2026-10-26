@@ -13,6 +13,7 @@ import gc
 import json
 import logging
 import sys
+import time
 import warnings
 from collections import Counter
 from pathlib import Path
@@ -94,6 +95,41 @@ def apply_overrides(cfg, args):
         if not 1 <= args.seeds <= len(seeds):
             raise ConfigError(f"--seeds {args.seeds}: config.yaml lists {len(seeds)} seeds {seeds}")
         cfg["training"]["seeds"] = seeds[:args.seeds]
+
+
+def run_settings(cfg, arch):
+    """What a finished run depends on besides its (attribute, arch, fold, seed) key. A completion
+    marker with different settings is not resumed: the results would not be comparable."""
+    return {"training": {k: v for k, v in cfg["training"].items() if k != "seeds"},
+            "augmentation": cfg["augmentation"], "split": cfg["split"], "model": cfg["models"][arch],
+            "labels_csv": str(cfg["data"]["labels_csv"]), "cache_longer_side": cfg["data"].get("cache_longer_side"),
+            "external_test": cfg["data"].get("external_test")}
+
+
+def marker_path(out_dir, attr, arch, fold, seed):
+    return Path(out_dir) / "completed" / attr / f"{arch}_fold{fold}_seed{seed}.json"
+
+
+def completed(cfg, out_dir, attr, arch, fold, seed):
+    """True if this combination already finished in out_dir with the same settings."""
+    path = marker_path(out_dir, attr, arch, fold, seed)
+    if not path.exists():
+        return False
+    saved = json.loads(path.read_text(encoding="utf-8"))["settings"]
+    if saved != json.loads(json.dumps(run_settings(cfg, arch))):
+        raise ConfigError(f"{path} was made with different settings; use a new --run-name, or delete the "
+                          "folder's completed/ markers to retrain everything")
+    return True
+
+
+def mark_completed(cfg, out_dir, attr, arch, fold, seed, seconds):
+    path = marker_path(out_dir, attr, arch, fold, seed)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"attribute": attr, "arch": arch, "fold": fold, "seed": seed,
+                               "seconds": round(seconds, 1), "settings": run_settings(cfg, arch)}, indent=1),
+                   encoding="utf-8")
+    tmp.replace(path)  # written only after the run's rows are in the tables
 
 
 def save_attribute_usage(out_dir, usages):
@@ -211,13 +247,23 @@ def main(argv=None):
                  cfg["training"]["pretrained"], cfg["training"]["amp"])
 
         run_rows, class_rows, source_rows, external_rows = [], [], [], []
+        plan = []
         for attr, (rows, split) in splits.items():
             folds = args.folds if args.folds is not None else range(len(split["folds"]))
+            for fold in folds:
+                if not 0 <= fold < len(split["folds"]):
+                    raise ConfigError(f"--folds {fold}: split has {len(split['folds'])} fold(s)")
+            plan += [(attr, arch, fold, seed) for arch in models for fold in folds for seed in seeds]
+        todo = [p for p in plan if not completed(cfg, out_dir, *p)]
+        if len(todo) < len(plan):
+            log.info("Resuming %s: %d of %d run(s) already completed, skipped", out_dir, len(plan) - len(todo),
+                     len(plan))
+        durations = []
+        for attr, (rows, split) in splits.items():
             for arch in models:
-                for fold in folds:
-                    if not 0 <= fold < len(split["folds"]):
-                        raise ConfigError(f"--folds {fold}: split has {len(split['folds'])} fold(s)")
-                    for seed in seeds:
+                for fold in sorted({p[2] for p in todo if p[:2] == (attr, arch)}):
+                    for seed in [p[3] for p in todo if p[:3] == (attr, arch, fold)]:
+                        started = time.perf_counter()
                         res = train_one(cfg, arch, rows, split, fold, seed, out_dir, device)
                         row, per_class, per_source = evaluate_run(res, cfg, out_dir, device)
                         run_rows.append(row)
@@ -228,6 +274,13 @@ def main(argv=None):
                                                                out_dir, device, cfg["models"][arch]["batch_size"])
                         # write after every run so finished results survive a later failure
                         write_tables(out_dir, run_rows, class_rows, list(cfg["models"]), source_rows, external_rows)
+                        durations.append(time.perf_counter() - started)
+                        mark_completed(cfg, out_dir, attr, arch, fold, seed, durations[-1])
+                        left = len(todo) - len(durations)
+                        eta = int(sum(durations) / len(durations) * left / 60)
+                        log.info("Progress: %d/%d runs done (%d this session), last %.1f min, ETA %dh%02dm for %d left",
+                                 len(plan) - left, len(plan), len(durations), durations[-1] / 60, eta // 60, eta % 60,
+                                 left)
                         del res
                         gc.collect()
                         torch.cuda.empty_cache()

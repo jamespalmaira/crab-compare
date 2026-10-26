@@ -23,7 +23,7 @@ from sklearn.metrics import confusion_matrix, f1_score, precision_recall_fscore_
 
 from torch.utils.data import DataLoader  # noqa: E402
 
-from src.data import CrabDataset, attribute_rows, build_transforms  # noqa: E402
+from src.data import CrabDataset, attribute_rows, build_transforms, image_root  # noqa: E402
 from src.models import param_count  # noqa: E402
 from src.train import predict, run_name  # noqa: E402
 
@@ -196,8 +196,7 @@ def evaluate_external(model, data_cfg, info, rows, cfg, out_dir, device, batch_s
         log.warning("External %s: no images to test", attribute)
         return []
     rows = rows.reset_index(drop=True)
-    image_root = Path(cfg["data"]["labels_csv"]).parent
-    ds = CrabDataset(rows, image_root, attribute, classes, build_transforms(data_cfg, cfg["augmentation"], train=False))
+    ds = CrabDataset(rows, image_root(cfg), attribute, classes, build_transforms(data_cfg, cfg["augmentation"], train=False))
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=0)
     probs, y_true = predict(model, loader, device, arch)
     name = run_name(arch, info["fold"], info["seed"])

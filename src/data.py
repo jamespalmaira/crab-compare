@@ -7,7 +7,9 @@ the rows labeled for it, and its split is made on those rows.
 """
 import json
 import logging
+import os
 import random
+import shutil
 from pathlib import Path
 
 import albumentations as A
@@ -391,6 +393,52 @@ def build_transforms(model_cfg, aug, train, seed=None):
     return A.Compose(steps + normalize, seed=seed)
 
 
+# ---------------------------------------------------------------- image cache
+
+def build_image_cache(src_root, image_paths, cache_root, longer_side):
+    """Pre-resized copies of the images, under the same relative paths. Returns files written.
+
+    An image whose longer side is above longer_side is resized to it (Lanczos, aspect kept) and
+    saved as JPEG quality 95; any other image is copied byte for byte. A cached file newer than
+    its source is kept, so the cache is built once. It depends on nothing but the images and
+    longer_side, so every model reads the same cached images.
+    """
+    src_root, cache_root = Path(src_root), Path(cache_root)
+    written = 0
+    for rel in image_paths:
+        src, dst = src_root / rel, cache_root / rel
+        if dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(dst.name + ".tmp")
+        with Image.open(src) as im:
+            if max(im.size) > longer_side:
+                scale = longer_side / max(im.size)
+                small = im.convert("RGB").resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))),
+                                                 Image.LANCZOS)
+                small.save(tmp, format="JPEG", quality=95)
+            else:
+                shutil.copyfile(src, tmp)
+        os.replace(tmp, dst)
+        written += 1
+    if written:
+        log.info("Image cache %s: %d file(s) written (longer side %d)", cache_root, written, longer_side)
+    return written
+
+
+def image_root(cfg):
+    """The folder image_path is relative to: labels.csv's folder, or with data.cache_longer_side set,
+    the pre-resized cache next to it (data/cache/longer_<N>/, built on first use for every row)."""
+    root = Path(cfg["data"]["labels_csv"]).parent
+    side = cfg["data"].get("cache_longer_side")
+    if not side:
+        return root
+    cache = root / "cache" / f"longer_{int(side)}"
+    paths = pd.read_csv(cfg["data"]["labels_csv"], usecols=["image_path"], dtype=str)["image_path"]
+    build_image_cache(root, paths, cache, int(side))
+    return cache
+
+
 # ---------------------------------------------------------------- dataset and loaders
 
 class CrabDataset(Dataset):
@@ -431,14 +479,14 @@ def _seed_worker(worker_id):
 
 def build_datasets(cfg, rows, split, fold, model_cfg, seed):
     """Datasets for one fold; every model gets the same crabs in each set."""
-    image_root = Path(cfg["data"]["labels_csv"]).parent
+    root = image_root(cfg)
     attribute, classes = split["attribute"], split["classes"]
     sets = {}
     for name in SPLIT_SETS:
         ids = set(split["folds"][fold][name])
         part = rows[rows["crab_id"].isin(ids)].reset_index(drop=True)
         tf = build_transforms(model_cfg, cfg["augmentation"], train=(name == "train"), seed=seed)
-        sets[name] = CrabDataset(part, image_root, attribute, classes, tf)
+        sets[name] = CrabDataset(part, root, attribute, classes, tf)
     return sets
 
 

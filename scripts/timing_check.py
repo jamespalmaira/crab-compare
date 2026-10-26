@@ -20,6 +20,7 @@ import warnings
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -81,7 +82,7 @@ def check_data(cfg, df_all, rows, external, split):
              {c: round(float(x), 3) for c, x in zip(classes, w)})
 
 
-def time_model(cfg, arch, rows, split, external, out_dir, device):
+def time_model(cfg, arch, rows, split, external, out_dir, device, no_eval=False):
     out = {"arch": arch, "model": cfg["models"][arch]["name"], "batch_size": cfg["models"][arch]["batch_size"],
            "status": "ok"}
     if device.type == "cuda":
@@ -89,17 +90,27 @@ def time_model(cfg, arch, rows, split, external, out_dir, device):
         torch.cuda.reset_peak_memory_stats()
     try:
         res = train_one(cfg, arch, rows, split, 0, cfg["training"]["seeds"][0], out_dir, device)
-        h = res.info["history"][0]
-        out.update(train_s=h["train_s"], val_s=h["val_s"], n_train=res.info["n_train"], n_val=res.info["n_val"],
-                   steps_per_epoch=res.info["steps_per_epoch"], accumulation_steps=res.info["accumulation_steps"])
+        hist = res.info["history"]
+        for h in hist:
+            out[f"train_s_e{h['epoch']}"], out[f"val_s_e{h['epoch']}"] = h["train_s"], h["val_s"]
+        steady = hist[1:] or hist  # epoch 1 carries the one-time data-loader start-up
+        out.update(train_s=float(np.mean([h["train_s"] for h in steady])),
+                   val_s=float(np.mean([h["val_s"] for h in steady])),
+                   startup_s=(hist[0]["train_s"] + hist[0]["val_s"])
+                   - float(np.mean([h["train_s"] + h["val_s"] for h in steady])) if len(hist) > 1 else 0.0,
+                   n_train=res.info["n_train"], n_val=res.info["n_val"],
+                   steps_per_epoch=res.info["steps_per_epoch"], accumulation_steps=res.info["accumulation_steps"],
+                   num_workers=cfg["data"]["num_workers"], cache=cfg["data"].get("cache_longer_side") or 0)
         if device.type == "cuda":
             out.update(peak_alloc_mib=torch.cuda.max_memory_allocated() / MiB,
                        peak_reserved_mib=torch.cuda.max_memory_reserved() / MiB)
-        start = time.perf_counter()
-        evaluate_run(res, cfg, out_dir, device)  # test set, latency, model size: timed, not reported
-        evaluate_external(res.model, res.data_cfg, res.info, external, cfg, out_dir, device,
-                          cfg["models"][arch]["batch_size"])
-        out["eval_s"] = time.perf_counter() - start
+        out["eval_s"] = float("nan")
+        if not no_eval:
+            start = time.perf_counter()
+            evaluate_run(res, cfg, out_dir, device)  # test set, latency, model size: timed, not reported
+            evaluate_external(res.model, res.data_cfg, res.info, external, cfg, out_dir, device,
+                              cfg["models"][arch]["batch_size"])
+            out["eval_s"] = time.perf_counter() - start
         del res
     except GPUOutOfMemory as e:
         out["status"] = f"out of memory: {e}"
@@ -112,16 +123,18 @@ def time_model(cfg, arch, rows, split, external, out_dir, device):
 
 
 def estimate(timings, n_folds, n_seeds, max_epochs):
-    """Upper bound (every run to max_epochs) and a likely figure (early stop at about half)."""
+    """Upper bound (every run to max_epochs) and a likely figure (early stop at about half).
+    Per run: the one-time start-up, steady-state epochs, then test and external evaluation."""
     rows = []
     for t in timings:
         if t["status"] != "ok":
             continue
         epoch = t["train_s"] + t["val_s"]
         runs = n_folds * n_seeds
+        fixed = t.get("startup_s", 0.0) + t["eval_s"]
         rows.append({"model": t["model"], "epoch_s": epoch, "runs": runs,
-                     "upper_h": runs * (epoch * max_epochs + t["eval_s"]) / 3600,
-                     "likely_h": runs * (epoch * max_epochs / 2 + t["eval_s"]) / 3600})
+                     "upper_h": runs * (epoch * max_epochs + fixed) / 3600,
+                     "likely_h": runs * (epoch * max_epochs / 2 + fixed) / 3600})
     return pd.DataFrame(rows)
 
 
@@ -133,6 +146,11 @@ def main(argv=None):
     ap.add_argument("--run-name", required=True, help="must start with timing_")
     ap.add_argument("--attribute", default=None, help="default: data.main_attribute")
     ap.add_argument("--models", nargs="+", default=["all"])
+    ap.add_argument("--epochs", type=int, default=1, help="epochs per model; from 2, epoch 1 is reported apart as "
+                    "start-up and the estimate uses the mean of the later epochs")
+    ap.add_argument("--num-workers", type=int, default=None, help="override data.num_workers")
+    ap.add_argument("--cache-longer-side", type=int, default=None, help="override data.cache_longer_side (0 = off)")
+    ap.add_argument("--no-eval", action="store_true", help="skip the timed test and external evaluation")
     ap.add_argument("--data-only", action="store_true", help="only the data check, no training")
     args = ap.parse_args(argv)
     if not args.run_name.startswith("timing_"):
@@ -141,8 +159,11 @@ def main(argv=None):
     cfg = load_config(args.config)
     full = {"seeds": list(cfg["training"]["seeds"]), "epochs": cfg["training"]["epochs"],
             "n_folds": cfg["split"]["n_folds"]}
-    apply_overrides(cfg, argparse.Namespace(labels=None, run_name=args.run_name, epochs=1, no_pretrained=False,
-                                            num_workers=None, min_groups_per_class=None, seeds=1))
+    apply_overrides(cfg, argparse.Namespace(labels=None, run_name=args.run_name, epochs=args.epochs,
+                                            no_pretrained=False, num_workers=args.num_workers,
+                                            min_groups_per_class=None, seeds=1))
+    if args.cache_longer_side is not None:
+        cfg["data"]["cache_longer_side"] = args.cache_longer_side or None
     attr = args.attribute or cfg["data"].get("main_attribute", "genus")
     out_dir = Path(cfg.get("results_dir", "results")) / cfg["run_name"]
     df = load_labels(cfg["data"]["labels_csv"])
@@ -160,15 +181,16 @@ def main(argv=None):
              cfg["training"]["effective_batch_size"])
     timings = []
     for arch in models:
-        timings.append(time_model(cfg, arch, rows, split, external, out_dir, device))
+        timings.append(time_model(cfg, arch, rows, split, external, out_dir, device, args.no_eval))
         log.info("%s", json.dumps(timings[-1]))
         pd.DataFrame(timings).to_csv(out_dir / "timing.csv", index=False)
 
     est = estimate(timings, full["n_folds"], len(full["seeds"]), full["epochs"])
     est.to_csv(out_dir / "timing_estimate.csv", index=False)
-    print("\nTiming per model (1 epoch, fold 0, seed 0; first epoch includes data-loader worker start-up)")
-    cols = [c for c in ("model", "batch_size", "accumulation_steps", "train_s", "val_s", "eval_s",
-                        "peak_alloc_mib", "peak_reserved_mib", "status") if c in pd.DataFrame(timings).columns]
+    print(f"\nTiming per model ({args.epochs} epoch(s), fold 0, seed 0, num_workers {cfg['data']['num_workers']}, "
+          f"cache {cfg['data'].get('cache_longer_side') or 'off'}). train_s/val_s: mean of epochs 2+ "
+          "(epoch 1 if only one); startup_s: epoch 1 minus that")
+    cols = [c for c in pd.DataFrame(timings).columns if c not in ("arch", "n_train", "n_val", "steps_per_epoch")]
     print(pd.DataFrame(timings)[cols].round(1).to_string(index=False))
     print(f"\nFull run: {len(models)} models x {full['n_folds']} folds x {len(full['seeds'])} seeds "
           f"{full['seeds']} x up to {full['epochs']} epochs")

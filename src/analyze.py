@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 
+from src.data import image_root
 from src.export import check_onnx, export_onnx, flops
 from src.gradcam import run_gradcam, sample_predictions
 from src.models import create_model
@@ -44,7 +45,7 @@ def profile_models(cfg, out_dir, device, model_order):
     per_seed = pd.read_csv(out_dir / "per_seed.csv")
     reps = representative_runs(per_seed, model_order, cfg["data"]["attributes"])
     a, ev = cfg.get("analysis", {}), cfg.get("evaluation", {})
-    image_root = Path(cfg["data"]["labels_csv"]).parent
+    images = image_root(cfg)  # the cache when data.cache_longer_side is set, as in training
     rows = []
     for arch, rep in reps.items():
         model, ckpt = load_trained(rep, device)
@@ -53,7 +54,7 @@ def profile_models(cfg, out_dir, device, model_order):
         log.info("Profiling %s using %s", arch, rep["checkpoint"])
 
         sample = sample_predictions(rep["predictions"], a.get("gradcam_images", 8), seed=a.get("gradcam_seed", 0))
-        cam = run_gradcam(model, arch, sample, image_root, ckpt["data_cfg"], cfg["augmentation"],
+        cam = run_gradcam(model, arch, sample, images, ckpt["data_cfg"], cfg["augmentation"],
                           out_dir / "gradcam" / rep["attribute"] / arch, device,
                           f"{name} - {rep['attribute']} - fold {rep['fold']} seed {rep['seed']}")
 
