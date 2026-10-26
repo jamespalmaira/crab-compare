@@ -8,12 +8,13 @@ This is the crab model comparison project (Dissertation 2). Read `CLAUDE_CODE_HA
 - The script never logs in to GitHub, sets git name/email, or pushes. Do not add code that does these things, and do not put tokens, passwords or personal emails in any file.
 
 ## Data
-- The project uses public datasets only: iNaturalist, GBIF, and manually imported sets. `labels.csv` records each image's `source`.
+- The main task is genus-level classification (`data.main_attribute: genus`). Species-level classification is secondary and exploratory: *Scylla* species are hard to tell apart from photos, so species labels are the least reliable, and *S. tranquebarica* has too little data to train on as a species. Report species results as exploratory.
+- The project uses public datasets only: iNaturalist, GBIF, and manually imported sets. `labels.csv` records each image's `source`, `genus`, `species` (blank when identified only to genus) and `id_rank`.
 - Disease is dropped from Dissertation 2: no public source provides it.
 - Sex and maturity labels are weak and unverified (taken from the public sources, not checked by an expert). Report them as such; never present them as verified.
 - `crab_id` is a grouping key (an observer, an observation, or an ID from the filename), not a verified individual crab.
 - Each attribute uses only the rows labeled for it, and is skipped with a message if it has too few classes or groups (see `config.yaml`).
-- `CLAUDE_CODE_HANDOUT.md` predates these decisions; where it lists disease or calls `crab_id` an individual, `handoff.md` wins.
+- `CLAUDE_CODE_HANDOUT.md` predates these decisions; where it lists disease, treats species as the main label, or calls `crab_id` an individual, `handoff.md` wins.
 
 ## Rules
 - Split data by `crab_id` group, never by image. (`crab_id` is the grouping key above; all rows with the same `crab_id` stay in one set.)
