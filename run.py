@@ -97,6 +97,12 @@ def apply_overrides(cfg, args):
         cfg["training"]["seeds"] = seeds[:args.seeds]
 
 
+def run_order(attr, models, folds, seeds):
+    """Seed first, then fold, then model: each finished seed is a full comparison of every model on
+    every fold, so a run stopped part-way still leaves complete seeds to analyse."""
+    return [(attr, arch, fold, seed) for seed in seeds for fold in folds for arch in models]
+
+
 def run_settings(cfg, arch):
     """What a finished run depends on besides its (attribute, arch, fold, seed) key. A completion
     marker with different settings is not resumed: the results would not be comparable."""
@@ -253,37 +259,36 @@ def main(argv=None):
             for fold in folds:
                 if not 0 <= fold < len(split["folds"]):
                     raise ConfigError(f"--folds {fold}: split has {len(split['folds'])} fold(s)")
-            plan += [(attr, arch, fold, seed) for arch in models for fold in folds for seed in seeds]
+            plan += run_order(attr, models, folds, seeds)
         todo = [p for p in plan if not completed(cfg, out_dir, *p)]
         if len(todo) < len(plan):
             log.info("Resuming %s: %d of %d run(s) already completed, skipped", out_dir, len(plan) - len(todo),
                      len(plan))
         durations = []
-        for attr, (rows, split) in splits.items():
-            for arch in models:
-                for fold in sorted({p[2] for p in todo if p[:2] == (attr, arch)}):
-                    for seed in [p[3] for p in todo if p[:3] == (attr, arch, fold)]:
-                        started = time.perf_counter()
-                        res = train_one(cfg, arch, rows, split, fold, seed, out_dir, device)
-                        row, per_class, per_source = evaluate_run(res, cfg, out_dir, device)
-                        run_rows.append(row)
-                        class_rows.append(per_class)
-                        source_rows.append(per_source)
-                        if external is not None:
-                            external_rows += evaluate_external(res.model, res.data_cfg, res.info, external, cfg,
-                                                               out_dir, device, cfg["models"][arch]["batch_size"])
-                        # write after every run so finished results survive a later failure
-                        write_tables(out_dir, run_rows, class_rows, list(cfg["models"]), source_rows, external_rows)
-                        durations.append(time.perf_counter() - started)
-                        mark_completed(cfg, out_dir, attr, arch, fold, seed, durations[-1])
-                        left = len(todo) - len(durations)
-                        eta = int(sum(durations) / len(durations) * left / 60)
-                        log.info("Progress: %d/%d runs done (%d this session), last %.1f min, ETA %dh%02dm for %d left",
-                                 len(plan) - left, len(plan), len(durations), durations[-1] / 60, eta // 60, eta % 60,
-                                 left)
-                        del res
-                        gc.collect()
-                        torch.cuda.empty_cache()
+        for attr, arch, fold, seed in todo:
+            rows, split = splits[attr]
+            started = time.perf_counter()
+            res = train_one(cfg, arch, rows, split, fold, seed, out_dir, device)
+            row, per_class, per_source = evaluate_run(res, cfg, out_dir, device)
+            run_rows.append(row)
+            class_rows.append(per_class)
+            source_rows.append(per_source)
+            if external is not None:
+                external_rows += evaluate_external(res.model, res.data_cfg, res.info, external, cfg,
+                                                   out_dir, device, cfg["models"][arch]["batch_size"])
+            # write after every run so finished results survive a later failure
+            write_tables(out_dir, run_rows, class_rows, list(cfg["models"]), source_rows, external_rows)
+            durations.append(time.perf_counter() - started)
+            mark_completed(cfg, out_dir, attr, arch, fold, seed, durations[-1])
+            left = len(todo) - len(durations)
+            eta = int(sum(durations) / len(durations) * left / 60)
+            log.info("Progress: %d/%d runs done (%d this session), last %.1f min, ETA %dh%02dm for %d left",
+                     len(plan) - left, len(plan), len(durations), durations[-1] / 60, eta // 60, eta % 60, left)
+            if not [p for p in todo[len(durations):] if p[0] == attr and p[3] == seed]:
+                log.info("Seed %s of %s complete: every fold and model done, a full comparison", seed, attr)
+            del res
+            gc.collect()
+            torch.cuda.empty_cache()
 
         for r in run_rows:
             log.info("%-10s %-24s fold %d seed %d | val F1 %.4f (epoch %d/%d) | test acc %.4f macro-F1 %.4f",

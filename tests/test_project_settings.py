@@ -30,3 +30,13 @@ class ProjectSettingsTests(unittest.TestCase):
     def test_training_settings_unchanged(self):
         self.assertFalse(self.cfg["training"]["amp"])
         self.assertEqual(list(self.cfg["models"]), MODELS)
+
+    def test_full_run_settings_pre_declared(self):
+        t, d = self.cfg["training"], self.cfg["data"]
+        self.assertEqual(t["seeds"], [0, 1, 2])
+        self.assertEqual(t["epochs"], 50)
+        self.assertEqual(t["early_stopping_patience"], 10)
+        self.assertFalse(t["amp"])
+        self.assertEqual(d["num_workers"], 2)
+        self.assertIsNone(d.get("cache_longer_side"))
+        self.assertEqual(d["main_attribute"], "genus")

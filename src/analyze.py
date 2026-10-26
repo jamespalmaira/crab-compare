@@ -1,9 +1,12 @@
 """Post-training analysis of a results folder (build steps 5-7).
 
-Statistics use every run. Grad-CAM, ONNX and FLOPs are properties of the
+Only the analysed attributes (selection.attributes: genus) are analysed;
+other attributes in the folder (species, exploratory) stay in the CSVs but
+get no statistics, Grad-CAM, ranking or report section. Statistics use every
+run of the analysed attributes. Grad-CAM, ONNX and FLOPs are properties of the
 architecture, so each model is checked once, on a representative trained
-checkpoint: the first attribute (config order), lowest fold, lowest seed.
-Their columns are added to per_seed.csv and summary.csv by model.
+checkpoint: the first analysed attribute, lowest fold, lowest seed. Their
+columns are added to per_seed.csv and summary.csv by model.
 """
 import logging
 from pathlib import Path
@@ -15,6 +18,7 @@ from src.data import image_root
 from src.export import check_onnx, export_onnx, flops
 from src.gradcam import run_gradcam, sample_predictions
 from src.models import create_model
+from src.select import selection_settings
 from src.stats import run_stats
 
 log = logging.getLogger(__name__)
@@ -42,8 +46,12 @@ def load_trained(row, device):
 
 def profile_models(cfg, out_dir, device, model_order):
     out_dir = Path(out_dir)
+    attrs = selection_settings(cfg)[0]
     per_seed = pd.read_csv(out_dir / "per_seed.csv")
-    reps = representative_runs(per_seed, model_order, cfg["data"]["attributes"])
+    per_seed = per_seed[per_seed["attribute"].isin(attrs)]
+    if per_seed.empty:
+        raise ValueError(f"No runs of the analysed attribute(s) {attrs} (selection.attributes) in {out_dir}")
+    reps = representative_runs(per_seed, model_order, attrs)
     a, ev = cfg.get("analysis", {}), cfg.get("evaluation", {})
     images = image_root(cfg)  # the cache when data.cache_longer_side is set, as in training
     rows = []
@@ -87,7 +95,8 @@ def add_profile_columns(out_dir, profile):
 
 def analyze(cfg, out_dir, device):
     model_order = list(cfg["models"])
-    stats = run_stats(out_dir, model_order, cfg.get("analysis", {}).get("stats_alpha", 0.05))
+    stats = run_stats(out_dir, model_order, cfg.get("analysis", {}).get("stats_alpha", 0.05),
+                      attributes=selection_settings(cfg)[0])
     profile = profile_models(cfg, out_dir, device, model_order)
     add_profile_columns(out_dir, profile)
     return stats, profile

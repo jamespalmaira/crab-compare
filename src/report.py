@@ -238,7 +238,11 @@ def data_section(out_dir):
             _table(["Attribute", "Status", "Images", "Groups", "Classes", "Groups per class", "Reason"], rows)]
 
 
-def source_sections(cfg, out_dir):
+def _only(df, attrs):
+    return df[df["attribute"].isin(attrs)] if attrs else df
+
+
+def source_sections(cfg, out_dir, attrs=None):
     """Per-source test results and the source-dominance check, when labels.csv has a source column."""
     out_dir = Path(out_dir)
     summary_path, balance_path = out_dir / "source_summary.csv", out_dir / "source_balance.csv"
@@ -247,7 +251,7 @@ def source_sections(cfg, out_dir):
                 "so there are no per-source results.</p>"]
     s = []
     if summary_path.exists():
-        src = pd.read_csv(summary_path)
+        src = _only(pd.read_csv(summary_path), attrs)
         s.append("<h2>Results by source</h2><p>Test accuracy and macro-F1 per source, mean ± std over runs. "
                  "Macro-F1 averages the classes present in that source's test images; a source with few test "
                  "images gives noisy numbers.</p>")
@@ -278,7 +282,7 @@ def source_sections(cfg, out_dir):
 SMALL_GROUPS = 10  # external classes with fewer groups are marked small
 
 
-def external_section(cfg, out_dir):
+def external_section(cfg, out_dir, attrs=None):
     """The external test set (data.external_test): what was held out, and every model's results on it."""
     out_dir = Path(out_dir)
     split_path, metrics_path = out_dir / "external_split.json", out_dir / "external_metrics.csv"
@@ -302,7 +306,7 @@ def external_section(cfg, out_dir):
     if not metrics_path.exists():
         s.append("<p class='meta'>No external results yet.</p>")
         return s
-    m = pd.read_csv(metrics_path)
+    m = _only(pd.read_csv(metrics_path), attrs)
     s.append(f"<p><b>Groups are small for some genera</b> (⚠ marks fewer than {SMALL_GROUPS} groups). Results on this "
              "set describe how the models did on these photos; they are not precise estimates, and per-class numbers "
              "for small classes should not be over-interpreted.</p>")
@@ -329,8 +333,11 @@ def external_section(cfg, out_dir):
 
 def write_report(cfg, out_dir, ranked, sensitivity):
     out_dir = Path(out_dir)
+    attrs = selection_settings(cfg)[0]  # the report covers the analysed attributes (genus) only
     summary = pd.read_csv(out_dir / "summary.csv")
-    per_seed = pd.read_csv(out_dir / "per_seed.csv")
+    others = sorted(set(summary["attribute"]) - set(attrs))
+    summary = _only(summary, attrs)
+    per_seed = _only(pd.read_csv(out_dir / "per_seed.csv"), attrs)
     profile = pd.read_csv(out_dir / "model_profile.csv").set_index("arch")
     stats = json.loads((out_dir / "stats.json").read_text(encoding="utf-8"))
     order = list(cfg["models"])
@@ -389,8 +396,8 @@ def write_report(cfg, out_dir, ranked, sensitivity):
     s.append("<p class='meta'>GFLOPs from thop (2 × MACs); thop does not count ViT's attention matrix products "
              "(about 1.4 GFLOPs for ViT-B/16), so ViT is slightly undercounted.</p>")
 
-    s.extend(source_sections(cfg, out_dir))
-    s.extend(external_section(cfg, out_dir))
+    s.extend(source_sections(cfg, out_dir, attrs))
+    s.extend(external_section(cfg, out_dir, attrs))
 
     # statistics
     s.append("<h2>Statistical tests</h2>")
@@ -418,7 +425,9 @@ def write_report(cfg, out_dir, ranked, sensitivity):
     sel_attrs, tie_on, alpha = selection_settings(cfg)
     plain = ranked.sort_values("rank")
     s.append("<h2>Ranking</h2><p>Only " + ", ".join(f"<b>{_e(a)}</b>" for a in sel_attrs) + " is scored "
-             "(selection.attributes); exploratory results such as species are reported above but do not affect the "
+             "(selection.attributes) and this report covers only that; exploratory results such as species "
+             + (f"(in this folder: {_e(', '.join(others))}) " if others else "")
+             + "stay in summary.csv and per_seed.csv and do not affect the "
              f"choice. The recommendation uses the <b>{'tie rule' if tie_on else 'plain weighted score'}</b>; both "
              "rankings are shown. Full method in ranking.md.</p>")
     s.append("<h3>Plain weighted score</h3><p>Score = " + " + ".join(f"{v:.2f} × {_e(k)}" for k, v in w.items()) +

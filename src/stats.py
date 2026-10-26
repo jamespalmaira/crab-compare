@@ -109,11 +109,13 @@ def mcnemar_pairs(per_seed, attribute, model_order):
     return rows
 
 
-def run_stats(out_dir, model_order, alpha=0.05):
+def run_stats(out_dir, model_order, alpha=0.05, attributes=None):
+    """Friedman and McNemar tests per attribute; with `attributes`, only those (the analysed ones)."""
     out_dir = Path(out_dir)
     per_seed = pd.read_csv(out_dir / "per_seed.csv")
     results = {"alpha": alpha, "correction": "holm", "attributes": {}}
-    for attribute in per_seed["attribute"].unique():
+    present = list(per_seed["attribute"].unique())
+    for attribute in [a for a in attributes if a in present] if attributes else present:
         pairs = mcnemar_pairs(per_seed, attribute, model_order)
         for r in pairs:
             r["significant_holm"] = bool(r["p_holm"] < alpha)

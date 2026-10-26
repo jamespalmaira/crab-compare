@@ -69,6 +69,10 @@ Out of scope for this bench: the mobile app, the multi-task model, decision-supp
     | 1 | 30 | 25 | 6.7 h | 3.7 h | 1.6 h |
 
     Current defaults: seeds [0, 1, 2], 50 epochs, patience 10. Not changed; the user will choose.
+- **Full-run settings, PRE-DECLARED on 2026-10-26 before any results (run name `full_genus_v1`):** main attribute **genus** (species is not trained in this run; it stays exploratory); seeds **[0, 1, 2]**; maximum epochs **50**; early-stopping patience **10**; **`amp: false`**; **`data.num_workers: 2`**; **image cache off** (`data.cache_longer_side: null`); **no cap on *Portunus* photos and no balanced sampling** (imbalance is handled by the class-weighted loss and macro-F1, as decided earlier). Reasons: the steady-state timing estimate is **about 17 h likely and 32 h at most** for this setup, which is affordable, and the image cache gave **no speedup**. These are recorded in `config.yaml` too and must not be changed for this run.
+  - **Run order: seed first, then fold, then model** (`run.run_order`), so each completed seed is a full five-model comparison on all five folds; a run stopped part-way still leaves complete seeds. The log says when a seed is complete.
+  - **The final analysis covers genus only** (`selection.attributes`): statistics (`stats.json`, `mcnemar.csv`), Grad-CAM, ONNX and FLOPs (on a genus checkpoint), ranking and `report.html`. If species runs are in the same folder they stay in `per_seed.csv` and `summary.csv` as exploratory and the analysis does not fail (`tests/test_full_pipeline.py`).
+  - **Commands** (in the project folder, virtual environment activated): full run `python run.py --config config.yaml --attribute genus --run-name full_genus_v1`; resume after an interruption: the same command (completed runs are skipped); analysis only: `python run.py --config config.yaml --run-name full_genus_v1 --analyze-only`.
 - **Statistics:** Friedman test across models (folds as blocks), McNemar test for pairs (Holm-corrected).
 - **No containers.** A virtual environment is sufficient for now.
 
@@ -89,7 +93,7 @@ Done: GitHub repo, environment setup and verification, build steps 1–7 tested 
 1. Photo review done (2026-10-26): 60 removals applied after the group cap; every photo in `labels.csv` has a verdict.
 2. Confirm the taxonomy and scope (open questions 1 and 2).
 3. Run `python run.py --attribute all --splits-only` to see the external split, the usable attributes, the genus/species composition of every fold, and the source-balance warnings.
-4. First real run with pretrained weights (needs internet once, about 550 MB of weights).
+4. Full run `full_genus_v1` with the pre-declared settings (weights already downloaded); commands under Decisions.
 5. Commit code changes after each step; never commit data or results.
 
 ## Expected layout

@@ -79,6 +79,13 @@ models:
   mobilenetv3_large_100: {name: MobileNetV3,     batch_size: 32}
   vit_base_patch16_224:  {name: ViT,             batch_size: 8}
 
+# PRE-DECLARED for the full run (full_genus_v1), fixed on 2026-10-26 before any
+# results: main attribute genus; seeds [0, 1, 2]; max epochs 50; early-stopping
+# patience 10; amp false; data.num_workers 2; data.cache_longer_side off (null);
+# no cap on Portunus photos and no balanced sampling (the class-weighted loss
+# handles imbalance). Reasons: the timing checks estimate about 17 h likely and
+# 32 h at most for this setup, and the image cache gave no speedup. See handoff.md.
+# Do not change these for the full run.
 training:
   pretrained: true        # weights download on the first real run (needs internet)
   effective_batch_size: 32
