@@ -65,7 +65,8 @@ def run_analysis(cfg, out_dir, device):
 
     ranked, sens = write_ranking(cfg, out_dir, profile)
     for _, r in ranked.iterrows():
-        log.info("rank %d  %-16s score %.3f", r["rank"], r["model"], r["score"])
+        log.info("tie-rule rank %d  %-16s tied %-5s | plain rank %d score %.3f | macro-F1 %.4f (%s)", r["tie_rank"],
+                 r["model"], r["tied"], r["rank"], r["score"], r["macro_f1"], r["tie_note"])
     log.info("Recommended backbone: %s (%s)", ranked.loc[0, "model"], ranked.loc[0, "arch"])
     for s in sens:
         log.info("sensitivity %s -> winner %s%s", s["weights"], s["winner_model"], " (CHANGED)" if s["changed"] else "")

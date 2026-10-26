@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.select import selection_settings
+
 RUN_KEYS = ["attribute", "arch", "fold", "seed"]
 SUMMARY_METRICS = [
     "accuracy", "macro_precision", "macro_recall", "macro_specificity", "macro_f1", "roc_auc_ovr",
@@ -344,7 +346,9 @@ def write_report(cfg, out_dir, ranked, sensitivity):
                  "these numbers check the pipeline and say nothing about the models on real crab photos.</div>")
     seeds = sorted(per_seed["seed"].unique().tolist())
     folds = sorted(per_seed["fold"].unique().tolist())
-    s.append(f"<div class='card'><div class='meta'>Recommended backbone (weighted rule, config.yaml)</div>"
+    rule = "tie rule" if selection_settings(cfg)[1] else "plain weighted score"
+    s.append(f"<div class='card'><div class='meta'>Recommended backbone ({rule}, scored on "
+             f"{_e(', '.join(selection_settings(cfg)[0]))} only; config.yaml)</div>"
              f"<div class='winner'>{_e(winner['model'])} <span class='meta'>({_e(winner['arch'])}), score "
              f"{winner['score']:.3f}</span></div><p class='meta'>Split {_e(first['split_strategy'])} (split seed "
              f"{_e(first['split_seed'])}, folds {folds}) · training seeds {seeds} · max epochs "
@@ -411,18 +415,37 @@ def write_report(cfg, out_dir, ranked, sensitivity):
 
     # ranking
     w = cfg["selection"]["weights"]
-    s.append("<h2>Ranking</h2><p>Score = " + " + ".join(f"{v:.2f} × {_e(k)}" for k, v in w.items()) +
+    sel_attrs, tie_on, alpha = selection_settings(cfg)
+    plain = ranked.sort_values("rank")
+    s.append("<h2>Ranking</h2><p>Only " + ", ".join(f"<b>{_e(a)}</b>" for a in sel_attrs) + " is scored "
+             "(selection.attributes); exploratory results such as species are reported above but do not affect the "
+             f"choice. The recommendation uses the <b>{'tie rule' if tie_on else 'plain weighted score'}</b>; both "
+             "rankings are shown. Full method in ranking.md.</p>")
+    s.append("<h3>Plain weighted score</h3><p>Score = " + " + ".join(f"{v:.2f} × {_e(k)}" for k, v in w.items()) +
              ", each criterion min-max normalised across the models (1 = best). Inference time is ONNX Runtime CPU "
-             "latency at batch 1; GPU latency is shown for reference only. Full method in ranking.md.</p>")
+             "latency at batch 1; GPU latency is shown for reference only.</p>")
     s.append(_table(["Rank", "Model", "Score", "Macro-F1", "norm", "ONNX CPU ms", "norm", "Size MB", "norm",
                      "Grad-CAM", "GPU ms (secondary)"],
                     [[r["rank"], f"<b>{_e(r['model'])}</b>" if r["rank"] == 1 else _e(r["model"]), _num(r["score"]),
                       _num(r["macro_f1"]), _num(r["macro_f1_norm"], 2), _num(r["onnx_cpu_ms"], 1),
                       _num(r["inference_time_norm"], 2), _num(r["model_size_mb"], 1), _num(r["model_size_norm"], 2),
-                      "pass" if r["gradcam"] else "fail", _num(r["gpu_latency_ms"], 1)] for _, r in ranked.iterrows()]))
+                      "pass" if r["gradcam"] else "fail", _num(r["gpu_latency_ms"], 1)] for _, r in plain.iterrows()]))
+    tie = ranked.sort_values("tie_rank")
+    s.append(f"<h3>Tie rule{' (the recommendation)' if tie_on else ' (reported, not used)'}</h3><p>A model is tied "
+             f"with the best macro-F1 model when it is not significantly worse by McNemar (Holm-corrected, alpha {alpha}) "
+             f"and its mean macro-F1 is within one standard deviation of the best ({_num(tie['best_f1_std'].iloc[0])}). "
+             "Tied models are ranked by inference time, model size and Grad-CAM only (same weights); the others "
+             "follow in plain-score order.</p>")
+    s.append(_table(["Rank", "Model", "Tied", "Macro-F1", "Gap to best", "McNemar p (Holm) vs best",
+                     "Speed/size/Grad-CAM score", "Note"],
+                    [[r["tie_rank"], f"<b>{_e(r['model'])}</b>" if r["tie_rank"] == 1 else _e(r["model"]),
+                      "yes" if r["tied"] else "no", _num(r["macro_f1"]), _num(r["f1_gap"]),
+                      _e(r["mcnemar_p_holm"]) if isinstance(r["mcnemar_p_holm"], str) and r["mcnemar_p_holm"] else "–",
+                      _num(r["tie_score"]), _e(r["tie_note"])] for _, r in tie.iterrows()]))
     changed = any(x["changed"] for x in sensitivity)
-    s.append("<h3>Sensitivity check</h3><p>Weights as macro-F1 / inference time / model size / Grad-CAM (%). "
-             f"The winner <b>{'changes' if changed else 'does not change'}</b> under the alternative weights.</p>")
+    s.append("<h3>Sensitivity check (plain weighted score)</h3><p>Weights as macro-F1 / inference time / model size / "
+             f"Grad-CAM (%). The winner <b>{'changes' if changed else 'does not change'}</b> under the alternative "
+             "weights.</p>")
     s.append(_table(["Weights", "Winner", "Winner changed", "Order"],
                     [[" / ".join(str(round(100 * x["weights"][k])) for k in w), _e(x["winner_model"]),
                       "yes" if x["changed"] else "no", _e(x["order"])] for x in sensitivity]))
