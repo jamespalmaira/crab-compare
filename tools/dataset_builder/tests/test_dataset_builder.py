@@ -23,7 +23,7 @@ from tools.dataset_builder import build, dedupe, gbif, grouping, inat, labels, l
 from tools.dataset_builder.cache import QueryCache
 from tools.dataset_builder.download import DownloadLog, materialize, verify_image
 from tools.dataset_builder.net import Client, MissingContact, contact_email
-from tools.dataset_builder.records import new_record
+from tools.dataset_builder.records import new_record, skip
 from tools.dataset_builder.tests.fakes import (GBIF, INAT, TERMS, FakeClient, FakeResponse, default_routes, gbif_occ,
                                                inat_obs, load_cfg)
 
@@ -789,6 +789,115 @@ class ExclusionAndCapTests(unittest.TestCase):
         self.assertEqual(CFG["max_photos_per_group"], 5)
         self.assertFalse(CFG["inaturalist"]["genus_needs_id"])
         self.assertEqual(CFG["inaturalist"]["quality_grade"], "research")
+
+
+class BasisAndRemovalTests(unittest.TestCase):
+    """exclude_basis_of_record, the removals file, and the offline rebuild."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        logging.disable(logging.WARNING)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        logging.disable(logging.NOTSET)
+
+    def test_basis_of_record_rule(self):
+        recs = [rec(source="gbif", photo_id=f"g{b}", basis_of_record=b)
+                for b in ("PRESERVED_SPECIMEN", "material_sample", "LIVING_SPECIMEN", "HUMAN_OBSERVATION")]
+        recs.append(rec(photo_id="i1"))  # iNaturalist: no basisOfRecord
+        self.assertEqual(build.exclude_basis_of_record(recs, CFG["exclude_basis_of_record"]), 2)
+        reasons = {r["photo_id"]: r["skip_reason"] for r in recs}
+        self.assertEqual(reasons, {"gPRESERVED_SPECIMEN": "excluded_basis_of_record",
+                                   "gmaterial_sample": "excluded_basis_of_record",
+                                   "gLIVING_SPECIMEN": "", "gHUMAN_OBSERVATION": "", "i1": ""})
+        self.assertEqual(CFG["exclude_basis_of_record"], ["PRESERVED_SPECIMEN", "MATERIAL_SAMPLE"])
+
+    def test_removals_match_path_or_photo_id_and_report_the_rest(self):
+        path = self.tmp / "removals.csv"
+        self.assertEqual(build.load_removals(path), [])  # no file, no removals
+        path.write_text("id,reason\nexternal/inaturalist/a/1.jpg,blurry\ngbif:7:0,not a crab\nnope.jpg,typo\n"
+                        "s1,already gone\n", encoding="utf-8")
+        recs = [rec(photo_id="i1", image_path="external/inaturalist/a/1.jpg"),
+                rec(photo_id="gbif:7:0", source="gbif", image_path="external/gbif/a/7.jpg"),
+                rec(photo_id="i2", image_path="external/inaturalist/a/2.jpg")]
+        gone = rec(photo_id="s1", image_path="x.jpg")
+        skip(gone, "license_missing")
+        out = build.apply_removals(recs + [gone], build.load_removals(path))
+        self.assertEqual(out, {"removed": 2, "unmatched": ["nope.jpg"], "already_skipped": ["s1"]})
+        self.assertEqual([(r["skip_reason"], r["removal_reason"]) for r in recs],
+                         [("removed_manually", "blurry"), ("removed_manually", "not a crab"), ("", "")])
+        self.assertEqual(gone["skip_reason"], "license_missing")  # first reason wins
+        path.write_text("file,why\na,b\n", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            build.load_removals(path)
+
+    def make_run(self):
+        """An earlier download run on disk: metadata.csv plus images."""
+        data = self.tmp / "data"
+        recs = []
+        for i in range(6):  # Scylla serrata, observer u{i}, two photos each
+            for k in range(2):
+                recs.append(rec(genus="Scylla", species="Scylla serrata", id_rank="species", photo_id=f"i{i}:{k}",
+                                observer_id=f"u{i}", observation_id=f"o{i}", country="PH" if i == 0 else "TW",
+                                image_path=f"external/inaturalist/scylla_serrata/{i}_{k}.jpg"))
+        recs.append(rec(genus="Scylla", species="Scylla serrata", source="gbif", photo_id="gbif:9:0",
+                        basis_of_record="PRESERVED_SPECIMEN", observer_id="gbif:museum",
+                        image_path="external/gbif/scylla_serrata/9.jpg"))
+        recs.append(rec(genus="Scylla", species="Scylla paramamosain", photo_id="p1", observer_id="u9",
+                        image_path="external/inaturalist/scylla_paramamosain/p1.jpg"))
+        skip(recs[-1], "excluded_species")  # never downloaded
+        skip(recs[1], "near_duplicate")
+        grouping.assign(recs, "observer")
+        for r in recs:
+            if r["skip_reason"] != "excluded_species":
+                p = data / r["image_path"]
+                p.parent.mkdir(parents=True, exist_ok=True)
+                textured(len(r["photo_id"])).save(p)
+        (data / "external" / "inaturalist" / "scylla_serrata" / "5_1.jpg").unlink()  # one image lost on disk
+        run = data / "external" / "runs" / "download"
+        run.mkdir(parents=True)
+        outputs.write_metadata(recs, run / "metadata.csv")
+        (data / "external" / "review").mkdir(parents=True)
+        (data / "external" / "review" / "stale.jpg").write_bytes(b"old")
+        return data
+
+    def test_rebuild_reapplies_rules_offline(self):
+        data = self.make_run()
+        (data / "removals.csv").write_text("id,reason\ni2:0,cooked crab\n", encoding="utf-8")
+        with redirect_stdout(io.StringIO()) as out:
+            rc = build.main(["--rebuild-from", "download", "--run-name", "cleaned", "--data-dir", str(data),
+                             "--overwrite-labels", "--imports"], client=None)  # no client: no network possible
+        self.assertEqual(rc, 0)
+        meta = pd.read_csv(data / "external" / "runs" / "cleaned" / "metadata.csv", dtype=str, keep_default_na=False)
+        reasons = dict(zip(meta["photo_id"], meta["skip_reason"]))
+        self.assertEqual(reasons["gbif:9:0"], "excluded_basis_of_record")
+        self.assertEqual(reasons["p1"], "excluded_species")
+        self.assertEqual(reasons["i0:1"], "near_duplicate")  # earlier image check kept
+        self.assertEqual(reasons["i5:1"], "image_missing")
+        self.assertEqual(reasons["i2:0"], "removed_manually")
+        self.assertEqual(meta.set_index("photo_id").loc["i2:0", "removal_reason"], "cooked crab")
+        labels_df = pd.read_csv(data / "labels.csv", dtype=str, keep_default_na=False)
+        self.assertEqual(len(labels_df), 12 - 3)  # 12 Scylla serrata photos minus near-dup, missing image, removal
+        self.assertNotIn("gbif", set(labels_df["source"]))
+        stages = pd.read_csv(data / "external" / "runs" / "cleaned" / "stage_counts.csv")
+        self.assertEqual(list(dict.fromkeys(stages["stage"])), [
+            "fetched (licensed, deduplicated)", "after exclude_species", "after exclude_basis_of_record",
+            "after image checks (from download)", "after manual removals (removals.csv)",
+            "after group cap (5 per group)"])
+        review = data / "external" / "review"
+        self.assertFalse((review / "stale.jpg").exists())
+        self.assertTrue((review / "scylla.jpg").exists() and (review / "scylla" / "scylla_serrata.jpg").exists())
+        self.assertIn("manual removals (", out.getvalue())
+        self.assertIn("1 listed, 1 photos removed", out.getvalue())
+
+    def test_rebuild_without_overwrite_keeps_labels(self):
+        data = self.make_run()
+        (data / "labels.csv").write_text("keep me\n", encoding="utf-8")
+        with redirect_stdout(io.StringIO()):
+            build.main(["--rebuild-from", "download", "--data-dir", str(data), "--imports"], client=None)
+        self.assertEqual((data / "labels.csv").read_text(encoding="utf-8"), "keep me\n")
+        self.assertTrue((data / "external" / "runs" / "download_rebuilt" / "labels.csv").exists())
 
 
 class DryRunTests(unittest.TestCase):

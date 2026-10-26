@@ -10,7 +10,7 @@ FIELDS = (
     "date", "country", "latitude", "longitude", "location_note",
     "license", "license_raw", "attribution", "width", "height",
     "sex", "sex_source", "sex_raw", "maturity", "maturity_source", "maturity_raw",
-    "skipped", "skip_reason", "crab_id", "crab_id_field", "phash", "group_cap_dropped",
+    "skipped", "skip_reason", "removal_reason", "crab_id", "crab_id_field", "phash", "group_cap_dropped",
 )
 
 

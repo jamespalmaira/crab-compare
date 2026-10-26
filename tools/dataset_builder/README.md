@@ -38,8 +38,35 @@ look-alike of edible crabs, not as an edible crab.
   `metadata.csv` keeps every photo and marks the others `group_cap_dropped`.
   `--max-photos-per-group` overrides it.
 
-Photos and groups per genus at each stage (fetched, after `exclude_species`, after the
-image checks, after the group cap) are printed and written to `stage_counts.csv`.
+- `exclude_basis_of_record` (default `PRESERVED_SPECIMEN`, `MATERIAL_SAMPLE`): GBIF records
+  of museum material are dropped before download (kept in `metadata.csv` with
+  `skip_reason = excluded_basis_of_record`). They are not the field or market photos the app
+  will see, and their look (jars, trays, ledger scans) is genus-specific, so a model could
+  use it as a shortcut. `LIVING_SPECIMEN` is kept.
+- `removals_file` (default `removals.csv` in the data folder): manual removals after visual
+  review of the contact sheets, applied when `labels.csv` is built. Columns `id` (an
+  `image_path` as in `labels.csv`, or a `photo_id` as in `metadata.csv`) and `reason`.
+  Removals are logged and counted (`skip_reason = removed_manually`, the reason in
+  `removal_reason`); ids that match nothing are reported. Make removals only from visual
+  review before training, never from model results.
+
+Photos and groups per genus at each stage (fetched, after `exclude_species`, after
+`exclude_basis_of_record`, after the image checks, after manual removals, after the group
+cap) are printed and written to `stage_counts.csv`.
+
+### Rebuilding without downloading
+
+After changing the exclusions or `removals.csv`, rebuild `labels.csv` and the contact sheets
+from an earlier download run, offline:
+
+```bash
+python -m tools.dataset_builder --rebuild-from download --run-name cleaned --overwrite-labels
+```
+
+It re-applies the rules to that run's `metadata.csv` and the images already on disk, keeps its
+image checks (failed downloads, invalid images, near-duplicates), and skips any kept photo
+whose image is missing (`image_missing`). Then `python scripts/dataset_summary.py --run cleaned`
+prints the totals, including the external Philippine split.
 
 ### Quality grade
 

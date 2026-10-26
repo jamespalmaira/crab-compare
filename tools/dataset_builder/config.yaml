@@ -18,6 +18,21 @@ defaults:
 # is uncertain (to confirm with a taxonomist).
 exclude_species: [Scylla paramamosain]
 
+# GBIF records whose basisOfRecord is listed are dropped from labels.csv (kept in
+# metadata.csv with skip_reason excluded_basis_of_record), before download.
+# Preserved specimens and material samples are museum material (jars, dried
+# specimens, ledger scans): not the field or market photos the app will see,
+# and a genus-specific look a model could use as a shortcut. LIVING_SPECIMEN
+# (captive animals) is kept. iNaturalist records have no basisOfRecord.
+exclude_basis_of_record: [PRESERVED_SPECIMEN, MATERIAL_SAMPLE]
+
+# Manual removals after visual review of the contact sheets, applied when
+# labels.csv is built (path relative to the data folder). CSV columns: id (an
+# image_path as in labels.csv, or a photo_id as in metadata.csv) and reason.
+# Removals are made only from visual review before training, never from model
+# results. They are logged and counted (skip_reason removed_manually).
+removals_file: removals.csv
+
 # At most this many photos per crab_id group (observer) within each genus go into
 # labels.csv, chosen with a fixed seed, so a few prolific photographers do not
 # dominate. Capping within the genus keeps every genus's group count unchanged.

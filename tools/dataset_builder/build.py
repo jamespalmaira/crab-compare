@@ -23,7 +23,7 @@ from . import dedupe, gbif, grouping, inat, licenses, manual, outputs
 from .cache import QueryCache
 from .download import DownloadLog, contact_sheet, materialize
 from .net import Client, MissingContact
-from .records import skip, slug, taxon_label, url_ext
+from .records import FIELDS, skip, slug, taxon_label, url_ext
 
 log = logging.getLogger("dataset_builder")
 
@@ -61,6 +61,9 @@ def parse_args(argv=None):
     p.add_argument("--data-dir", default=ROOT / "data", type=Path)
     p.add_argument("--run-name", default=None, help="output folder name under data/external/runs/")
     p.add_argument("--overwrite-labels", action="store_true", help="replace an existing data/labels.csv")
+    p.add_argument("--rebuild-from", default=None, metavar="RUN",
+                   help="offline: re-apply exclusions, removals and the group cap to RUN's metadata.csv and the "
+                        "images already on disk, then write labels.csv and contact sheets (no network, no downloads)")
     return p.parse_args(argv)
 
 
@@ -262,6 +265,110 @@ def exclude_species(records, names):
     return n
 
 
+def exclude_basis_of_record(records, values):
+    """Mark records whose GBIF basisOfRecord is listed skipped (excluded_basis_of_record).
+    iNaturalist records have no basisOfRecord and are never matched. Returns how many were marked."""
+    wanted = {str(v).strip().upper() for v in values or []}
+    n = 0
+    for r in records:
+        if not r["skipped"] and str(r["basis_of_record"]).strip().upper() in wanted:
+            skip(r, "excluded_basis_of_record")
+            n += 1
+    return n
+
+
+REMOVAL_COLUMNS = ("id", "reason")
+
+
+def load_removals(path):
+    """Manual removals from a CSV with columns id (an image_path as in labels.csv, or a photo_id as
+    in metadata.csv) and reason. A missing file means no removals."""
+    path = Path(path)
+    if not path.exists():
+        return []
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    missing = [c for c in REMOVAL_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"{path}: missing columns {missing}; expected {list(REMOVAL_COLUMNS)}")
+    rows = [{"id": r["id"].strip(), "reason": r["reason"].strip()} for _, r in df.iterrows() if r["id"].strip()]
+    for r in rows:
+        if not r["reason"]:
+            log.warning("%s: removal of %s has no reason", path, r["id"])
+    return rows
+
+
+def apply_removals(records, removals):
+    """Skip records listed in the removals file (removed_manually; the reason goes to removal_reason).
+
+    Returns {'removed': n, 'unmatched': [ids], 'already_skipped': [ids]}: an id that matches no
+    record, or only records already skipped for another reason, is reported, never guessed.
+    """
+    by_id = {}
+    for r in records:
+        for key in (r["image_path"], r["photo_id"]):
+            if key:
+                by_id.setdefault(key, []).append(r)
+    out = {"removed": 0, "unmatched": [], "already_skipped": []}
+    for rm in removals:
+        hits = by_id.get(rm["id"], [])
+        if not hits:
+            out["unmatched"].append(rm["id"])
+            continue
+        live = [r for r in hits if not r["skipped"]]
+        if not live:
+            out["already_skipped"].append(rm["id"])
+        for r in live:
+            skip(r, "removed_manually")
+            r["removal_reason"] = rm["reason"]
+            out["removed"] += 1
+    if out["unmatched"]:
+        log.warning("removals: %d id(s) match no record: %s", len(out["unmatched"]), out["unmatched"][:10])
+    if out["already_skipped"]:
+        log.info("removals: %d id(s) were already skipped for another reason", len(out["already_skipped"]))
+    log.info("removals: %d photo(s) removed manually", out["removed"])
+    return out
+
+
+def pre_download_rules(records, cfg, include_optional=False):
+    """exclude_species, then exclude_basis_of_record. Returns (stage rows, counts)."""
+    stages = outputs.stage_counts(records, "fetched (licensed, deduplicated)", include_optional)
+    n_species = exclude_species(records, cfg.get("exclude_species"))
+    stages += outputs.stage_counts(records, "after exclude_species", include_optional)
+    n_basis = exclude_basis_of_record(records, cfg.get("exclude_basis_of_record"))
+    stages += outputs.stage_counts(records, "after exclude_basis_of_record", include_optional)
+    log.info("exclude_species %s: %d photos; exclude_basis_of_record %s: %d photos",
+             cfg.get("exclude_species") or "none", n_species, cfg.get("exclude_basis_of_record") or "none", n_basis)
+    log_stage_change(stages, "exclude_basis_of_record")
+    return stages, {"excluded_photos": n_species, "excluded_basis_photos": n_basis}
+
+
+def post_image_rules(records, cfg, data_dir, max_per_group, include_optional=False):
+    """Manual removals (removals file), then the group cap. Returns (stage rows, counts)."""
+    removals_path = Path(data_dir) / cfg.get("removals_file", "removals.csv")
+    removals = load_removals(removals_path)
+    rm = apply_removals(records, removals)
+    stages = outputs.stage_counts(records, f"after manual removals ({removals_path.name})", include_optional)
+    n_cap = apply_group_cap(records, max_per_group, cfg.get("group_cap_seed", 0))
+    stages += outputs.stage_counts(records, f"after group cap ({max_per_group or 'none'} per group)",
+                                   include_optional, after_cap=True)
+    return stages, {"removals_file": str(removals_path), "removals_listed": len(removals),
+                    "removed_manually": rm["removed"], "removals_unmatched": rm["unmatched"],
+                    "removals_already_skipped": rm["already_skipped"], "group_cap_dropped_photos": n_cap}
+
+
+def log_stage_change(rows, label):
+    """Log photos/groups per genus before and after the last stage in rows."""
+    stage_names = list(dict.fromkeys(r["stage"] for r in rows))
+    if len(stage_names) < 2:
+        return
+    before = {r["genus"]: r for r in rows if r["stage"] == stage_names[-2]}
+    after = {r["genus"]: r for r in rows if r["stage"] == stage_names[-1]}
+    for genus, a in after.items():
+        b = before.get(genus, a)
+        log.info("%s, %s: %d photos / %d groups -> %d / %d", label, genus, b["photos"], b["groups_observer"],
+                 a["photos"], a["groups_observer"])
+
+
 def apply_group_cap(records, max_n, seed):
     """Keep at most max_n photos per crab_id group within each genus in labels.csv
     (group_cap_dropped marks the rest).
@@ -310,6 +417,111 @@ def write_contact_sheets(records, data_dir, rc, include_optional=False):
     return written
 
 
+RULE_REASONS = ("excluded_species", "excluded_basis_of_record", "removed_manually")
+IMAGE_CHECK_REASONS = ("download_failed", "invalid_image", "near_duplicate")
+
+
+def load_records(path):
+    """Records from a metadata.csv (booleans restored)."""
+    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    records = []
+    for row in df.to_dict("records"):
+        r = {f: row.get(f, "") for f in FIELDS}
+        for flag in ("skipped", "optional", "group_cap_dropped"):
+            r[flag] = str(r[flag]).strip().lower() == "true"
+        records.append(r)
+    return records
+
+
+def rebuild(args, cfg, taxa_list, max_per_group):
+    """Offline: re-apply the rules from exclude_species onward to an earlier run.
+
+    Uses the run's metadata.csv and the images already on disk. Earlier rule skips are cleared
+    and re-applied with the current config and removals file; the earlier image checks (failed
+    downloads, invalid images, near-duplicates) are kept as they were. A kept record whose image
+    is not on disk is skipped as image_missing (run a download to fetch it). No network.
+    """
+    data_dir = Path(args.data_dir)
+    src = data_dir / "external" / "runs" / args.rebuild_from
+    if not (src / "metadata.csv").exists():
+        print(f"error: no metadata.csv in {src}", file=sys.stderr)
+        return 2
+    run_name = args.run_name or f"{args.rebuild_from}_rebuilt"
+    run_dir = data_dir / "external" / "runs" / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    records = load_records(src / "metadata.csv")
+    image_checks = {}
+    for r in records:
+        if r["skipped"] and r["skip_reason"] in RULE_REASONS + IMAGE_CHECK_REASONS:
+            if r["skip_reason"] in IMAGE_CHECK_REASONS:
+                image_checks[r["photo_id"]] = r["skip_reason"]
+            r.update(skipped=False, skip_reason="", removal_reason="")
+    log.info("rebuild from %s: %d records, %d earlier image-check skips kept", src, len(records), len(image_checks))
+
+    stages, rule_counts = pre_download_rules(records, cfg, args.include_optional)
+    missing = 0
+    for r in records:
+        if r["skipped"]:
+            continue
+        if r["photo_id"] in image_checks:
+            skip(r, image_checks[r["photo_id"]])
+        elif not (data_dir / r["image_path"]).exists():
+            skip(r, "image_missing")
+            missing += 1
+    if missing:
+        log.warning("rebuild: %d kept photos have no image on disk (skipped as image_missing; run a download)", missing)
+    stages += outputs.stage_counts(records, f"after image checks (from {args.rebuild_from})", args.include_optional)
+    post_stages, post_counts = post_image_rules(records, cfg, data_dir, max_per_group, args.include_optional)
+    stages += post_stages
+    rule_counts.update(post_counts)
+
+    th = cfg["thresholds"]
+    species = [s["name"] for s in taxa_list["species"]]
+    optional_species = {s["name"] for s in taxa_list["species"] if s["optional"]}
+    counts = outputs.counts_table(records, species, th, optional=optional_species)
+    genus_counts = outputs.genus_table(records, taxa_list, th)
+    finished = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    run_info = {"run_name": run_name, "rebuilt_from": args.rebuild_from, "started": started, "finished": finished,
+                "dry_run": False, "include_optional": args.include_optional,
+                "exclude_species": list(cfg.get("exclude_species") or []),
+                "exclude_basis_of_record": list(cfg.get("exclude_basis_of_record") or []), **rule_counts,
+                "image_missing": missing, "max_photos_per_group": max_per_group,
+                "group_cap_seed": cfg.get("group_cap_seed", 0), "stages": stages,
+                "skip_reasons": dict(Counter(r["skip_reason"] for r in records if r["skipped"]))}
+    outputs.write_metadata(records, run_dir / "metadata.csv")
+    outputs.write_labels(records, run_dir / "labels.csv", args.include_optional)
+    pd.DataFrame(stages).to_csv(run_dir / "stage_counts.csv", index=False)
+    counts.to_csv(run_dir / "counts.csv", index=False)
+    genus_counts.to_csv(run_dir / "genus_counts.csv", index=False)
+    for name in ("taxa.csv", "places.csv"):
+        if (src / name).exists():
+            (run_dir / name).write_bytes((src / name).read_bytes())
+    outputs.write_attribution(records, [], run_dir / "ATTRIBUTION.md", run_info)
+    (run_dir / "run.json").write_text(json.dumps(run_info, indent=2), encoding="utf-8")
+
+    labels_csv = data_dir / "labels.csv"
+    if labels_csv.exists() and not args.overwrite_labels:
+        log.warning("%s exists; not replaced (use --overwrite-labels). New labels are in %s", labels_csv,
+                    run_dir / "labels.csv")
+    else:
+        outputs.write_labels(records, labels_csv, args.include_optional)
+        log.info("wrote %s", labels_csv)
+    review = data_dir / "external" / "review"
+    for old in review.rglob("*.jpg") if review.exists() else []:
+        old.unlink()  # generated sheets only; rewritten from the new labels below
+    write_contact_sheets(records, data_dir, cfg["review"], args.include_optional)
+
+    report = "\n".join([f"=== Rebuild {run_name} from {args.rebuild_from} (offline, no downloads) ===", ""]
+                       + exclusions_text(run_info)
+                       + ["--- Counts per genus: MAIN TASK (photos_in_labels after the group cap) ---",
+                          outputs.format_genus_counts(genus_counts), "",
+                          "skip reasons: " + json.dumps(run_info["skip_reasons"])]) + "\n"
+    (run_dir / "counts.txt").write_text(report, encoding="utf-8")
+    print(report)
+    return 0
+
+
 def main(argv=None, client=None):
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = parse_args(argv)
@@ -323,6 +535,8 @@ def main(argv=None, client=None):
     max_per_group = (args.max_photos_per_group if args.max_photos_per_group is not None
                      else cfg.get("max_photos_per_group") or 0)
     excluded = list(cfg.get("exclude_species") or [])
+    if args.rebuild_from:
+        return rebuild(args, cfg, taxa_list, max_per_group)
     countries = countries_from_arg(args.countries, cfg)
     sources = [s for s in args.sources.split(",") if s in API_SOURCES]
     quality_grade = args.quality_grade or cfg["inaturalist"]["quality_grade"]
@@ -369,10 +583,7 @@ def main(argv=None, client=None):
             if reason:
                 skip(r, reason)
     grouping.assign(records, args.group_by)
-    stages = outputs.stage_counts(records, "fetched (licensed, deduplicated)", args.include_optional)
-    n_excluded = exclude_species(records, excluded)
-    stages += outputs.stage_counts(records, "after exclude_species", args.include_optional)
-    log.info("exclude_species %s: %d photos dropped", excluded or "none", n_excluded)
+    stages, rule_counts = pre_download_rules(records, cfg, args.include_optional)
     capped |= apply_cap(records, args.max_per_species, priority)
     outputs.write_metadata(records, run_dir / "metadata.csv")  # before any download, so progress is on disk
 
@@ -406,9 +617,9 @@ def main(argv=None, client=None):
 
     stages += outputs.stage_counts(records, "after image checks" + (" (dry run: none)" if args.dry_run else ""),
                                    args.include_optional)
-    n_cap = apply_group_cap(records, max_per_group, cfg.get("group_cap_seed", 0))
-    stages += outputs.stage_counts(records, f"after group cap ({max_per_group or 'none'} per group)",
-                                   args.include_optional, after_cap=True)
+    post_stages, post_counts = post_image_rules(records, cfg, data_dir, max_per_group, args.include_optional)
+    stages += post_stages
+    rule_counts.update(post_counts)
     pd.DataFrame(stages).to_csv(run_dir / "stage_counts.csv", index=False)
 
     th = cfg["thresholds"]
@@ -424,9 +635,10 @@ def main(argv=None, client=None):
                 "genus_needs_id": include_needs_id,
                 "genus_needs_id_identifications": cfg["inaturalist"].get("genus_needs_id_identifications"),
                 "include_optional": args.include_optional,
-                "exclude_species": excluded, "excluded_photos": n_excluded,
+                "exclude_species": excluded, "exclude_basis_of_record": cfg.get("exclude_basis_of_record") or [],
+                **rule_counts,
                 "max_photos_per_group": max_per_group, "group_cap_seed": cfg.get("group_cap_seed", 0),
-                "group_cap_dropped_photos": n_cap, "stages": stages,
+                "stages": stages,
                 "optional_taxa": sorted({g["name"] for g in taxa_list["genera"] if g["optional"]} | optional_species),
                 "group_by": args.group_by, "max_per_species": args.max_per_species,
                 "imports": [s["spec_file"] for s in specs], "license_allowlist": allow,
@@ -459,6 +671,22 @@ def main(argv=None, client=None):
     return 0
 
 
+def exclusions_text(run_info):
+    """The exclusions, removals and cap, with the per-genus stage table."""
+    rm = run_info
+    lines = ["--- Exclusions, removals and caps ---",
+             f"exclude_species {', '.join(rm.get('exclude_species') or []) or 'none'}: {rm.get('excluded_photos', 0)} photos",
+             f"exclude_basis_of_record {', '.join(rm.get('exclude_basis_of_record') or []) or 'none'}: "
+             f"{rm.get('excluded_basis_photos', 0)} photos",
+             f"manual removals ({rm.get('removals_file', 'removals file')}): {rm.get('removals_listed', 0)} listed, "
+             f"{rm.get('removed_manually', 0)} photos removed, {len(rm.get('removals_unmatched') or [])} unmatched, "
+             f"{len(rm.get('removals_already_skipped') or [])} already skipped",
+             f"max_photos_per_group {rm.get('max_photos_per_group') or 'none'} (seed {rm.get('group_cap_seed')}): "
+             f"{rm.get('group_cap_dropped_photos', 0)} photos left out of labels.csv",
+             outputs.format_stages(rm["stages"]), ""]
+    return lines
+
+
 def render_report(run_info, taxa, places, counts, attrs, verdicts, warns, genus_counts=None):
     th = run_info["thresholds"]
     needs_id = ("included, flagged review_flag=genus_needs_id"
@@ -481,10 +709,7 @@ def render_report(run_info, taxa, places, counts, attrs, verdicts, warns, genus_
     if len(places):
         out += ["--- iNaturalist places ---", places.to_string(index=False), ""]
     if run_info.get("stages"):
-        out += [f"--- Exclusions and caps (exclude_species: {', '.join(run_info['exclude_species']) or 'none'}, "
-                f"{run_info['excluded_photos']} photos; max_photos_per_group: {run_info['max_photos_per_group'] or 'none'}"
-                f", seed {run_info['group_cap_seed']}, {run_info['group_cap_dropped_photos']} photos left out "
-                "of labels.csv) ---", outputs.format_stages(run_info["stages"]), ""]
+        out += exclusions_text(run_info)
     if genus_counts is not None and len(genus_counts):
         out += ["--- Counts per genus: MAIN TASK (groups are over kept photos; photos_in_labels after the group cap) ---",
                 outputs.format_genus_counts(genus_counts), ""]
