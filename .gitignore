@@ -1,7 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
-data/
+data/*
+# Manual removals from visual review are versioned (see handoff.md); nothing else in data/ is.
+!data/removals.csv
 results/
 checkpoints/
 *.pth
