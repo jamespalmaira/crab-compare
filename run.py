@@ -187,6 +187,9 @@ def main(argv=None):
         out_dir = Path(cfg.get("results_dir", "results")) / cfg["run_name"]
 
         if args.analyze_only:
+            if cfg["run_name"].startswith("timing_"):
+                raise ConfigError(f"{cfg['run_name']} is a timing run (speed and memory only); "
+                                  "timing runs are excluded from any analysis")
             if not (out_dir / "per_seed.csv").exists():
                 raise FileNotFoundError(f"No per_seed.csv in {out_dir}; train first or check --run-name")
             device = resolve_device(cfg)

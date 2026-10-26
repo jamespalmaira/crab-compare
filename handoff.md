@@ -52,6 +52,7 @@ Out of scope for this bench: the mobile app, the multi-task model, decision-supp
   - AMP was slower on this GPU, which has no tensor cores. fp32 training steps were 1.3–3.8× faster depending on the model.
   - A cuDNN fp16 bug in ResNet-50's `layer4.0.downsample.0` (1×1 conv, 1024→2048, stride 2) produces NaNs that depend on batch size, not on the images. In eval it hits batch sizes 3–6, 11–13, 20 and larger, which leftover val/test batches can be. It is not an overflow: the fp32 output is below 4. The same layer is fine with cuDNN off or in fp32.
   - The AMP code path is kept. `run.py` prints a warning if `amp: true` is set.
+- **Timing check on the real data (2026-10-26, `results/timing_20261026`, `scripts/timing_check.py`). Speed, memory and data loading only; its metrics are not results and are excluded from any analysis** (`run.py --analyze-only` refuses `timing_*` runs). Genus, fold 0, seed 0, 1 epoch, pretrained weights (downloaded then), configured micro-batches, effective batch 32, `amp: false`, GTX 1650. The data check passed: 1,321 images, 508 groups, 4 classes on the training side; no Philippine image or observer in any fold; train/val/test disjoint in every fold. 83 observers photographed more than one genus; each stays whole in one set, and the split stratifies them by their most common genus. Per model (train s / val s / test+external evaluation s / peak GPU reserved MiB): EfficientNet-B3 57 / 29 / 45 / 2576; ResNet-50 45 / 29 / 42 / 1880; DenseNet-121 46 / 31 / 63 / 2454; MobileNetV3 34 / 30 / 33 / 1832; ViT 90 / 33 / 72 / 2516. No out-of-memory errors, no non-finite losses or outputs. Validation takes about 30 s for every model on 197 images, which points to data-loader start-up and image decoding (2 workers on Windows) rather than the model; later epochs reuse persistent workers, so these first-epoch figures lean high. **Estimate for the full run** (5 models × 5 folds × 3 seeds × up to 50 epochs, plus evaluation): **upper bound about 89 h; likely about 45 h** if early stopping ends runs at about 25 epochs (ViT about 13 h of that, MobileNetV3 about 7 h).
 - **Statistics:** Friedman test across models (folds as blocks), McNemar test for pairs (Holm-corrected).
 - **No containers.** A virtual environment is sufficient for now.
 
@@ -84,7 +85,8 @@ crab-compare/
   src/
     config.py  data.py  models.py  train.py  evaluate.py  stats.py  gradcam.py  export.py  select.py
     analyze.py  report.py
-  scripts/           make_dummy_data.py, check_models.py, smoke_train.py, dataset_summary.py
+  scripts/           make_dummy_data.py, check_models.py, smoke_train.py, dataset_summary.py,
+                     review_sheets.py, timing_check.py
   tools/dataset_builder/   public-data builder (see its README)
   tests/             python -m unittest discover -s tests -t .
   run.py
@@ -100,6 +102,7 @@ python run.py --config config.yaml --run-name <run> --analyze-only    # re-run s
 python -m tools.dataset_builder --dry-run                             # counts only (widened, observer groups)
 python -m tools.dataset_builder --rebuild-from download --run-name cleaned --overwrite-labels  # after removals
 python scripts/dataset_summary.py --run cleaned                       # totals per genus, external split, disk
+python scripts/timing_check.py --run-name timing_<date>               # data check + 1-epoch timing, NOT a result
 ```
 
 ## Rules for whoever continues this work
@@ -108,6 +111,7 @@ python scripts/dataset_summary.py --run cleaned                       # totals p
 - Do not promise exact age or hormone levels in any output.
 - Do not force-push or commit data, checkpoints or results. The exceptions are `data/removals.csv` and `data/review_log.csv`, which are versioned.
 - Ask the user before downloading large datasets or changing the model list.
+- **Timing runs (`results/timing_*`) are excluded from any analysis.** They train 1 epoch on one fold only to measure speed, memory and data loading; never report, compare or analyse their metrics, and never point `--analyze-only` or a report at them.
 - Log random seeds, GPU model, CUDA version and package versions with every result.
 - Do not describe `crab_id` as a verified individual, or any label (genus, species, sex, maturity) as verified, in any output.
 

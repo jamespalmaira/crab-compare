@@ -253,6 +253,7 @@ def train_one(cfg, arch, rows, split, fold, seed, out_dir, device):
         stopper = EarlyStopping(t["early_stopping_patience"])
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         step = 0
+        history = []  # per epoch: loss, val macro-F1, and training and validation seconds kept apart
 
         for epoch in range(1, t["epochs"] + 1):
             start = time.perf_counter()
@@ -267,17 +268,24 @@ def train_one(cfg, arch, rows, split, fold, seed, out_dir, device):
                 step += 1
                 group = []
             # a trailing partial group is dropped, so every step uses the full effective batch
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            train_s = time.perf_counter() - start
 
+            val_start = time.perf_counter()
             val_probs, val_targets = predict(model, loaders["val"], device, arch)
             val_f1 = macro_f1(val_targets, val_probs, n_classes)
+            val_s = time.perf_counter() - val_start
             improved = stopper.step(val_f1, epoch)
             if improved:
                 torch.save({"state_dict": model.state_dict(), "arch": arch, "classes": classes,
                             "attribute": attribute, "fold": fold, "seed": seed, "epoch": epoch,
                             "val_macro_f1": val_f1, "data_cfg": data_cfg, "info": info}, ckpt_path)
-            log.info("%s epoch %d/%d train_loss %.4f val_macro_f1 %.4f lr %.2e %.1fs%s", name, epoch, t["epochs"],
-                     float(np.mean(losses)), val_f1, scheduler.get_last_lr()[0], time.perf_counter() - start,
-                     " *best" if improved else "")
+            history.append({"epoch": epoch, "train_loss": float(np.mean(losses)), "val_macro_f1": val_f1,
+                            "train_s": train_s, "val_s": val_s})
+            log.info("%s epoch %d/%d train_loss %.4f val_macro_f1 %.4f lr %.2e %.1fs (train %.1fs, val %.1fs)%s",
+                     name, epoch, t["epochs"], float(np.mean(losses)), val_f1, scheduler.get_last_lr()[0],
+                     time.perf_counter() - start, train_s, val_s, " *best" if improved else "")
             if stopper.should_stop:
                 log.info("%s early stop: no val macro-F1 improvement for %d epochs", name, stopper.patience)
                 break
@@ -285,7 +293,7 @@ def train_one(cfg, arch, rows, split, fold, seed, out_dir, device):
         best = torch.load(ckpt_path, map_location=device, weights_only=False)
         model.load_state_dict(best["state_dict"])
         info.update(epochs_trained=epoch, best_epoch=stopper.best_epoch, best_val_macro_f1=stopper.best,
-                    checkpoint=str(ckpt_path), log=str(log_path))
+                    checkpoint=str(ckpt_path), log=str(log_path), history=history)
         log.info("%s done: best epoch %d, val macro-F1 %.4f, checkpoint %s", name, stopper.best_epoch,
                  stopper.best, ckpt_path)
     return TrainResult(info, model, datasets, loaders, data_cfg)
