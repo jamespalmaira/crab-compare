@@ -20,6 +20,7 @@ import torch
 from src.config import ConfigError, load_config
 from src.analyze import analyze
 from src.data import ATTRIBUTES, SPLIT_SETS, SplitError, attribute_rows, get_split, load_labels
+from src.select import write_ranking
 from src.evaluate import evaluate_run
 from src.report import write_tables
 from src.train import GPUOutOfMemory, NonFiniteLoss, limit_gpu_memory, resolve_device, train_one
@@ -55,6 +56,15 @@ def run_analysis(cfg, out_dir, device):
             log.info("%s McNemar %s vs %s: %d/%d discordant, p raw %.4f, Holm %.4f", attribute, r["model_a"],
                      r["model_b"], r["a_right_b_wrong"], r["a_wrong_b_right"], r["p_raw"], r["p_holm"])
     log.info("Wrote stats.json, mcnemar.csv, model_profile.csv, gradcam/ and onnx/ in %s", out_dir)
+
+    ranked, sens = write_ranking(cfg, out_dir, profile)
+    for _, r in ranked.iterrows():
+        log.info("rank %d  %-16s score %.3f", r["rank"], r["model"], r["score"])
+    log.info("Recommended backbone: %s (%s)", ranked.loc[0, "model"], ranked.loc[0, "arch"])
+    for s in sens:
+        log.info("sensitivity %s -> winner %s%s", s["weights"], s["winner_model"], " (CHANGED)" if s["changed"] else "")
+    log.info("Wrote ranking.csv and ranking.md in %s", out_dir)
+    return ranked, sens
 
 
 def apply_overrides(cfg, args):

@@ -71,6 +71,17 @@ analysis:                 # build step 5, run on a finished results folder
   onnx_rtol: 0.001        # onnxruntime vs PyTorch output tolerance
   onnx_atol: 0.0001
 
+selection:                # build step 6; fixed before results are seen
+  weights:                # must sum to 1
+    macro_f1: 0.50        # mean test macro-F1 across attributes (higher is better)
+    inference_time: 0.20  # ONNX Runtime CPU latency, batch size 1 (lower is better)
+    model_size: 0.15      # fp32 weight file size in MB (lower is better)
+    gradcam: 0.15         # Grad-CAM compatibility check, pass/fail
+  sensitivity:            # alternative weight sets; reported, never used to pick
+    - {macro_f1: 0.60, inference_time: 0.15, model_size: 0.10, gradcam: 0.15}
+    - {macro_f1: 0.40, inference_time: 0.25, model_size: 0.20, gradcam: 0.15}
+    - {macro_f1: 0.70, inference_time: 0.10, model_size: 0.10, gradcam: 0.10}
+
 device: auto            # auto (cuda if available, else cpu with a warning), cuda, cpu
 
 gpu:
