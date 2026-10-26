@@ -216,7 +216,8 @@ def build_transforms(model_cfg, aug, train, seed=None):
 
 class CrabDataset(Dataset):
     def __init__(self, rows, image_root, attribute, classes, transform):
-        self.paths = [Path(image_root) / p for p in rows["image_path"]]
+        self.image_paths = list(rows["image_path"])  # as written in labels.csv
+        self.paths = [Path(image_root) / p for p in self.image_paths]
         self.crab_ids = list(rows["crab_id"])
         class_to_idx = {c: i for i, c in enumerate(classes)}
         self.targets = [class_to_idx[v] for v in rows[attribute]]

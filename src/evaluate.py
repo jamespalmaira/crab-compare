@@ -102,6 +102,28 @@ def save_confusion_matrix(cm, classes, stem, title):
     plt.close(fig)
 
 
+def predictions_path(out_dir, arch, attribute, seed, fold):
+    return Path(out_dir) / "predictions" / f"{arch}_{attribute}_{seed}_{fold}.csv"
+
+
+def save_predictions(path, dataset, y_true, probs, classes):
+    """One row per test image, in dataset order (the test loader does not shuffle)."""
+    if len(dataset) != len(y_true) or list(dataset.targets) != list(y_true):
+        raise ValueError(f"Predictions do not line up with the test set ({len(y_true)} vs {len(dataset)} images)")
+    df = pd.DataFrame({
+        "image_path": dataset.image_paths,
+        "crab_id": dataset.crab_ids,
+        "true_label": [classes[i] for i in y_true],
+        "pred_label": [classes[i] for i in probs.argmax(1)],
+    })
+    for i, c in enumerate(classes):
+        df[f"prob_{c}"] = probs[:, i]
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    return df
+
+
 # ---------------------------------------------------------------- speed and size
 
 @torch.no_grad()
@@ -136,6 +158,8 @@ def evaluate_run(result, cfg, out_dir, device):
     classes = info["classes"]
     probs, y_true = predict(model, result.loaders["test"], device, info["arch"])
     summary, per_class, cm = compute_metrics(y_true, probs, classes)
+    pred_path = predictions_path(out_dir, info["arch"], info["attribute"], info["seed"], info["fold"])
+    save_predictions(pred_path, result.datasets["test"], y_true, probs, classes)
 
     name = run_name(info["arch"], info["fold"], info["seed"])
     stem = Path(out_dir) / "confusion_matrices" / info["attribute"] / name
@@ -164,7 +188,7 @@ def evaluate_run(result, cfg, out_dir, device):
         "pretrained": info["pretrained"], "split_strategy": info["split_strategy"], "split_seed": info["split_seed"],
         "gpu": info["gpu"], "torch": info["torch"], "cuda": info["cuda"], "cudnn": info["cudnn"],
         "timm": info["timm"], "checkpoint": info["checkpoint"], "log": info["log"],
-        "confusion_matrix": str(stem.with_suffix(".png")),
+        "confusion_matrix": str(stem.with_suffix(".png")), "predictions": str(pred_path),
     }
     per_class.insert(0, "seed", info["seed"])
     per_class.insert(0, "fold", info["fold"])
