@@ -117,6 +117,17 @@ analysis:                 # build step 5, run on a finished results folder
   onnx_opset: 17
   onnx_rtol: 0.001        # onnxruntime vs PyTorch output tolerance
   onnx_atol: 0.0001
+  # ONNX Runtime CPU latency protocol, batch size 1 (the ranking's inference time). Decided
+  # 2026-10-27 after the first analysis of full_genus_v1, where a single 50-run timing moved
+  # by up to 46% between two passes (ViT 281 -> 411 ms) and flipped the sensitivity check.
+  # Each repeat times a model in its own new process, with other programs closed; the ranking
+  # uses the median of the per-process medians. threads = physical cores of the timing PC
+  # (AMD Ryzen 5 3550H, 4 cores / 8 threads). Run with: --analyze-only --analyze-steps latency
+  onnx_latency:
+    threads: 4            # fixed ONNX Runtime intra-op threads (inter-op 1, sequential)
+    warmup: 20
+    runs: 200             # timed runs per process; median and IQR reported
+    repeats: 3            # separate processes per model
 
 selection:                # build step 6; fixed before results are seen (2026-10-26)
   # Only the main task is scored. Exploratory results (species) are reported but
@@ -129,6 +140,12 @@ selection:                # build step 6; fixed before results are seen (2026-10
   tie_rule:
     enabled: true
     alpha: 0.05
+    # Which McNemar test decides "significantly worse" (added 2026-10-27, after the first
+    # analysis of full_genus_v1): per_seed runs the test separately for each seed (every test
+    # image once, Holm across the pairs within that seed) and counts a model as worse only if it
+    # is significant in every seed. pooled (the original) pools all seeds, which treats the same
+    # images tested three times as independent pairs and makes p-values too small. Both are reported.
+    mcnemar: per_seed
   weights:                # must sum to 1
     macro_f1: 0.50        # mean test macro-F1 across attributes (higher is better)
     inference_time: 0.20  # ONNX Runtime CPU latency, batch size 1 (lower is better)

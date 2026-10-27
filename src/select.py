@@ -96,30 +96,59 @@ def score(table, weights):
 
 
 TIE_CRITERIA = ("inference_time", "model_size", "gradcam")
+MCNEMAR_TEXT = {
+    "pooled": "Pooled: one test over all folds and seeds; every test image counts once per seed, so the pairs are "
+              "not independent and the p-values are too small.",
+    "per_seed": "Per seed (added 2026-10-27, after the first analysis): one test per seed over all folds, so every "
+                "test image counts once, Holm-corrected within each seed; a model is significantly worse only when "
+                "it is significant in every seed. The p-values are listed per seed.",
+}
 
 
-def _mcnemar_pairs(stats, attributes):
+MCNEMAR_MODES = ("pooled", "per_seed")
+
+
+def _mcnemar_pairs(stats, attributes, mode="pooled"):
+    """{(attribute, model_a, model_b): [pair result, ...]}: one pooled result, or one per seed."""
     out = {}
     for attr in attributes:
-        for p in (stats.get("attributes", {}).get(attr, {}).get("mcnemar", {}) or {}).get("pairs", []):
-            out[(attr, p["model_a"], p["model_b"])] = p
+        st = stats.get("attributes", {}).get(attr, {})
+        if mode == "pooled":
+            groups = [(st.get("mcnemar") or {}).get("pairs", [])]
+        else:
+            seeds = (st.get("mcnemar_per_seed") or {}).get("seeds", {})
+            groups = [seeds[k] for k in sorted(seeds, key=int)]
+        for pairs in groups:
+            for p in pairs:
+                out.setdefault((attr, p["model_a"], p["model_b"]), []).append(p)
     return out
 
 
-def tie_rule(ranked, stats, attributes, weights, alpha=0.05):
-    """Re-rank with the tie rule. Adds tied, f1_gap, best_f1_std, mcnemar_p_holm, tie_score and tie_rank.
+def _worse(p, best_arch, alpha):
+    """True when the best model is significantly better than the other model of the pair p."""
+    best_right = p["a_right_b_wrong"] if p["model_a"] == best_arch else p["a_wrong_b_right"]
+    model_right = p["a_wrong_b_right"] if p["model_a"] == best_arch else p["a_right_b_wrong"]
+    return p["p_holm"] < alpha and best_right > model_right
+
+
+def tie_rule(ranked, stats, attributes, weights, alpha=0.05, mcnemar_mode="pooled"):
+    """Re-rank with the tie rule. Adds tied, f1_gap, best_f1_std, mcnemar_p_holm, tie_note, tie_score, tie_rank.
 
     The best model has the highest mean macro-F1 (on the selection attributes). Another model is
     tied with it when it is not significantly worse by McNemar (Holm-corrected, on every
     selection attribute) and its mean macro-F1 is within one standard deviation (of the best
-    model, across runs) of the best. Tied models are ranked by speed, size and Grad-CAM only,
-    with their usual weights; the other models follow in plain-score order. A model with no
-    McNemar result against the best is not tied.
+    model, across runs) of the best. With mcnemar_mode "pooled" one test over all runs decides;
+    with "per_seed" a model is significantly worse only when the test is significant (best
+    model better) in every seed. Tied models are ranked by speed, size and Grad-CAM only, with
+    their usual weights; the other models follow in plain-score order. A model with no McNemar
+    result against the best is not tied.
     """
+    if mcnemar_mode not in MCNEMAR_MODES:
+        raise ValueError(f"selection.tie_rule.mcnemar must be one of {MCNEMAR_MODES}, not {mcnemar_mode!r}")
     t = ranked.copy()
     best = t.sort_values(["macro_f1", "rank"], ascending=[False, True]).iloc[0]
     best_std = 0.0 if pd.isna(best["macro_f1_std"]) else float(best["macro_f1_std"])
-    pairs = _mcnemar_pairs(stats, attributes)
+    pairs = _mcnemar_pairs(stats, attributes, mcnemar_mode)
     tied, gaps, pvals, notes = [], [], [], []
     for _, r in t.iterrows():
         gap = float(best["macro_f1"] - r["macro_f1"])
@@ -129,15 +158,17 @@ def tie_rule(ranked, stats, attributes, weights, alpha=0.05):
             continue
         worse, ps, note = False, [], ""
         for attr in attributes:
-            p = pairs.get((attr, best["arch"], r["arch"])) or pairs.get((attr, r["arch"], best["arch"]))
-            if p is None:
+            found = pairs.get((attr, best["arch"], r["arch"])) or pairs.get((attr, r["arch"], best["arch"]))
+            if not found:
                 worse, note = True, f"no McNemar result for {attr}"
                 break
-            best_right = p["a_right_b_wrong"] if p["model_a"] == best["arch"] else p["a_wrong_b_right"]
-            model_right = p["a_wrong_b_right"] if p["model_a"] == best["arch"] else p["a_right_b_wrong"]
-            ps.append(f"{p['p_holm']:.4f}")
-            if p["p_holm"] < alpha and best_right > model_right:
-                worse, note = True, f"significantly worse on {attr}"
+            ps.append(",".join(f"{p['p_holm']:.4f}" for p in found))
+            hits = [_worse(p, best["arch"], alpha) for p in found]
+            if all(hits):
+                worse = True
+                note = f"significantly worse on {attr}" + (f" in all {len(hits)} seeds" if mcnemar_mode == "per_seed" else "")
+            elif any(hits):
+                note = f"significantly worse in {sum(hits)} of {len(hits)} seeds on {attr}, not all"
         within = gap <= best_std + 1e-12
         if not worse and not within:
             note = f"macro-F1 gap {gap:.3f} > best std {best_std:.3f}"
@@ -168,6 +199,11 @@ def fmt_weights(w):
     return " / ".join(f"{round(100 * w[k])}" for k in CRITERIA)
 
 
+def tie_mcnemar_mode(cfg):
+    """selection.tie_rule.mcnemar: which McNemar version decides the tie rule (default pooled, the original)."""
+    return str((cfg["selection"].get("tie_rule") or {}).get("mcnemar", "pooled"))
+
+
 def selection_settings(cfg):
     """(selection attributes, tie rule on?, alpha). Attributes default to the main attribute."""
     sel = cfg["selection"]
@@ -189,7 +225,17 @@ def write_ranking(cfg, out_dir, profile=None):
     stats = json.loads(stats_path.read_text(encoding="utf-8")) if stats_path.exists() else {}
     table = model_table(summary, profile, list(cfg["models"]), attrs)
     plain = score(table, sel["weights"])
-    tied = tie_rule(plain, stats, attrs, sel["weights"], alpha)
+    mode = tie_mcnemar_mode(cfg)
+    tied = tie_rule(plain, stats, attrs, sel["weights"], alpha, mode)
+    other_mode = "pooled" if mode == "per_seed" else "per_seed"
+    has_other = other_mode == "pooled" or all("mcnemar_per_seed" in stats.get("attributes", {}).get(a, {})
+                                               for a in attrs)
+    other = tie_rule(plain, stats, attrs, sel["weights"], alpha, other_mode) if has_other else None
+    if other is not None:
+        o = other.set_index("arch")
+        tied[f"tied_{other_mode}"] = tied["arch"].map(o["tied"])
+        tied[f"tie_rank_{other_mode}"] = tied["arch"].map(o["tie_rank"])
+        tied[f"mcnemar_p_holm_{other_mode}"] = tied["arch"].map(o["mcnemar_p_holm"])
     final = tied if tie_on else tied.sort_values("rank").reset_index(drop=True)
     final["recommended"] = [i == 0 for i in range(len(final))]
     winner = final.loc[0]
@@ -224,11 +270,27 @@ def write_ranking(cfg, out_dir, profile=None):
               f"not significantly worse by McNemar (Holm-corrected, alpha {alpha}) and its mean macro-F1 is within one "
               f"standard deviation of the best ({tied['best_f1_std'].iloc[0]:.3f}). Tied models are ranked by inference "
               "time, model size and Grad-CAM only (same weights); the rest follow in plain-score order.", "",
+              f"McNemar version used (selection.tie_rule.mcnemar): **{mode}**. "
+              + MCNEMAR_TEXT[mode], "",
               "| Rank | Model | Tied | Macro-F1 | Gap to best | McNemar p (Holm) vs best | Speed/size/Grad-CAM score | Note |",
               "|---|---|---|---|---|---|---|---|"]
     for _, r in tied.iterrows():
         lines.append(f"| {r['tie_rank']} | {r['model']} | {'yes' if r['tied'] else 'no'} | {r['macro_f1']:.3f} "
                      f"| {r['f1_gap']:.3f} | {r['mcnemar_p_holm'] or '-'} | {r['tie_score']:.3f} | {r['tie_note']} |")
+    if other is not None:
+        lines += ["", f"### Tie rule with the {other_mode} McNemar test (reported, not used)", "",
+                  MCNEMAR_TEXT[other_mode], "",
+                  "| Rank | Model | Tied | McNemar p (Holm) vs best | Note |", "|---|---|---|---|---|"]
+        for _, r in other.iterrows():
+            lines.append(f"| {r['tie_rank']} | {r['model']} | {'yes' if r['tied'] else 'no'} "
+                         f"| {r['mcnemar_p_holm'] or '-'} | {r['tie_note']} |")
+        same_set = set(tied.loc[tied["tied"], "arch"]) == set(other.loc[other["tied"], "arch"])
+        same_winner = tied.loc[0, "arch"] == other.loc[0, "arch"]
+        lines += ["", f"Compared with the {other_mode} version, the tie set "
+                  f"**{'does not change' if same_set else 'changes'}** ({mode}: "
+                  f"{', '.join(tied.loc[tied['tied'], 'model'])}; {other_mode}: {', '.join(other.loc[other['tied'], 'model'])}) "
+                  f"and the tie-rule winner **{'does not change' if same_winner else 'changes'}** ({mode}: "
+                  f"{tied.loc[0, 'model']}; {other_mode}: {other.loc[0, 'model']})."]
     lines += ["", "## Sensitivity check (plain weighted score)", "",
               f"Weights are macro-F1 / inference time / model size / Grad-CAM (%). Base: {fmt_weights(w)}.", "",
               "| Weights | Winner | Winner changed | Full order |", "|---|---|---|---|"]

@@ -92,6 +92,27 @@ class TieRuleTests(unittest.TestCase):
         out = tie_rule(score(table, BASE), stats, ["genus"], BASE).set_index("arch")
         self.assertTrue(out.loc["c", "tied"])  # significant, but C is the one with more right answers
 
+    def test_per_seed_mcnemar_needs_significance_in_every_seed(self):
+        table, stats = tie_table()
+        pair = lambda a, b, ab, ba, p: {"model_a": a, "model_b": b, "a_right_b_wrong": ab,  # noqa: E731
+                                        "a_wrong_b_right": ba, "p_holm": p}
+        # C (pooled: significantly worse) is significant in seeds 0 and 1 only; B in no seed; D in all
+        stats["attributes"]["genus"]["mcnemar_per_seed"] = {"seeds": {
+            "0": [pair("a", "b", 4, 3, 0.9), pair("a", "c", 10, 1, 0.01), pair("d", "a", 1, 9, 0.02)],
+            "1": [pair("a", "b", 4, 3, 0.9), pair("a", "c", 10, 2, 0.03), pair("d", "a", 1, 9, 0.02)],
+            "2": [pair("a", "b", 4, 3, 0.9), pair("a", "c", 10, 5, 0.40), pair("d", "a", 1, 9, 0.02)]}}
+        out = tie_rule(score(table, BASE), stats, ["genus"], BASE, mcnemar_mode="per_seed").set_index("arch")
+        self.assertTrue(out.loc["c", "tied"])
+        self.assertIn("2 of 3 seeds", out.loc["c", "tie_note"])
+        self.assertEqual(out.loc["c", "mcnemar_p_holm"], "0.0100,0.0300,0.4000")
+        self.assertTrue(out.loc["b", "tied"])
+        self.assertFalse(out.loc["d", "tied"])  # significant in all seeds, and the gap is too large anyway
+        self.assertFalse(out.loc["e", "tied"])  # no result
+        pooled = tie_rule(score(table, BASE), stats, ["genus"], BASE).set_index("arch")
+        self.assertFalse(pooled.loc["c", "tied"])
+        with self.assertRaises(ValueError):
+            tie_rule(score(table, BASE), stats, ["genus"], BASE, mcnemar_mode="other")
+
     def test_write_ranking_scores_genus_only_and_reports_both(self):
         tmp = Path(tempfile.mkdtemp())
         try:
@@ -118,6 +139,17 @@ class TieRuleTests(unittest.TestCase):
             self.assertIn("## Plain weighted score", md)
             self.assertIn("## Tie rule (the recommendation)", md)
             self.assertIn("Scored attributes: genus", md)
+            self.assertNotIn("McNemar test (reported, not used)", md)  # no per-seed results in stats.json
+            seeds = {str(k): stats["attributes"]["genus"]["mcnemar"]["pairs"] for k in range(3)}
+            stats["attributes"]["genus"]["mcnemar_per_seed"] = {"seeds": seeds}
+            (tmp / "stats.json").write_text(json.dumps(stats), encoding="utf-8")
+            cfg["selection"]["tie_rule"]["mcnemar"] = "per_seed"
+            ranked, _ = write_ranking(cfg, tmp, profile)
+            md = (tmp / "ranking.md").read_text(encoding="utf-8")
+            self.assertIn("McNemar version used (selection.tie_rule.mcnemar): **per_seed**", md)
+            self.assertIn("Tie rule with the pooled McNemar test (reported, not used)", md)
+            self.assertIn("the tie set **does not change**", md)
+            self.assertEqual(ranked.set_index("arch")["tied_pooled"].to_dict(), ranked.set_index("arch")["tied"].to_dict())
             cfg["selection"]["tie_rule"]["enabled"] = False
             plain, _ = write_ranking(cfg, tmp, profile)
             self.assertEqual(plain.loc[0, "rank"], 1)  # plain score decides when the rule is off

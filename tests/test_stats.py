@@ -13,7 +13,7 @@ import pandas as pd
 from scipy.stats import binomtest, friedmanchisquare
 from statsmodels.stats.multitest import multipletests
 
-from src.stats import HOLDOUT_CAUTION, friedman, mcnemar_pairs, run_stats
+from src.stats import HOLDOUT_CAUTION, friedman, mcnemar_pairs, mcnemar_per_seed, run_stats
 
 MODELS = ["m1", "m2", "m3"]
 
@@ -86,6 +86,25 @@ class StatsTests(unittest.TestCase):
         self.assertEqual(pairs[("m1", "m2")]["a_right_b_wrong"], 2)
         self.assertEqual(pairs[("m1", "m3")]["n_pairs"], 2)
 
+    def test_mcnemar_per_seed_tests_each_seed_alone(self):
+        # m1 beats m2 on 30 images in seed 0 and on 30 in seed 1 but only on 3 in seed 2
+        right, wrong = [1] * 30 + [0] * 4, [0] * 34
+        correct = {("m1", 0, 0): right, ("m2", 0, 0): wrong, ("m3", 0, 0): right,
+                   ("m1", 0, 1): right, ("m2", 0, 1): wrong, ("m3", 0, 1): right,
+                   ("m1", 0, 2): [1] * 3 + [0] * 31, ("m2", 0, 2): wrong, ("m3", 0, 2): [1] * 3 + [0] * 31}
+        df = self.per_seed("kfold", {k: 0.5 for k in correct}, correct)
+        res = mcnemar_per_seed(df, "species", MODELS, alpha=0.05)
+        self.assertEqual(sorted(res["seeds"]), [0, 1, 2])
+        for seed, pairs in res["seeds"].items():
+            self.assertEqual({r["n_pairs"] for r in pairs}, {34})  # every image once per seed
+            pooled_alone = mcnemar_pairs(df[df["seed"] == seed], "species", MODELS)
+            self.assertEqual([r["p_holm"] for r in pairs], [r["p_holm"] for r in pooled_alone])  # own Holm
+        s12 = next(r for r in res["summary"] if (r["model_a"], r["model_b"]) == ("m1", "m2"))
+        self.assertEqual((s12["n_seeds_significant"], s12["n_seeds"]), (2, 3))
+        self.assertFalse(s12["significant_all_seeds_a_better"])
+        pooled = {(r["model_a"], r["model_b"]): r for r in mcnemar_pairs(df, "species", MODELS)}
+        self.assertEqual(pooled[("m1", "m2")]["n_pairs"], 102)  # pooled counts each image three times
+
     def test_run_stats_writes_valid_json(self):
         rng = np.random.default_rng(1)
         keys = [(m, k, s) for m in MODELS for k in range(3) for s in (0, 1)]
@@ -98,6 +117,8 @@ class StatsTests(unittest.TestCase):
         self.assertEqual(len(sp["mcnemar"]["pairs"]), 3)
         self.assertEqual(sp["friedman"]["block"], "fold")
         self.assertTrue((self.tmp / "mcnemar.csv").exists())
+        self.assertEqual(sorted(sp["mcnemar_per_seed"]["seeds"]), ["0", "1"])
+        self.assertEqual(len(pd.read_csv(self.tmp / "mcnemar_per_seed.csv")), 2 * 3)
 
 
 if __name__ == "__main__":

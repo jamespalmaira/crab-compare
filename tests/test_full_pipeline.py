@@ -47,8 +47,10 @@ class FullPipelineTests(unittest.TestCase):
         cfg["data"].update(labels_csv=str(csv), external_test=None, min_groups_per_class=2, num_workers=0)
         cfg["evaluation"].update(latency_warmup=1, latency_runs=2)
         cfg["analysis"]["gradcam_images"] = 2
+        cfg["analysis"]["onnx_latency"].update(warmup=1, runs=2, repeats=2)
         config = cls.tmp / "config.yaml"
         config.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        cls.config = config
 
         cls.calls = []
         real_train = run.train_one
@@ -70,6 +72,19 @@ class FullPipelineTests(unittest.TestCase):
     def tearDownClass(cls):
         shutil.rmtree(cls.tmp, ignore_errors=True)
         logging.disable(logging.NOTSET)
+
+    def test_analyze_steps_rerun_gradcam_only_keeps_latency(self):
+        before = pd.read_csv(self.out / "model_profile.csv")
+        latency = (self.out / "onnx_latency.csv").read_bytes()
+        stats = (self.out / "stats.json").read_bytes()
+        rc = run.main(["--config", str(self.config), "--run-name", "pipeline", "--analyze-only",
+                       "--analyze-steps", "gradcam"])
+        self.assertEqual(rc, 0)
+        after = pd.read_csv(self.out / "model_profile.csv")
+        self.assertEqual(list(after["onnx_cpu_ms"]), list(before["onnx_cpu_ms"]))  # not re-timed
+        self.assertEqual((self.out / "onnx_latency.csv").read_bytes(), latency)
+        self.assertEqual((self.out / "stats.json").read_bytes(), stats)
+        self.assertTrue(after["gradcam_pass"].all())
 
     def test_runs_and_analysis_succeed(self):
         self.assertEqual(self.rc, 0)

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.select import selection_settings
+from src.select import selection_settings, tie_mcnemar_mode
 
 RUN_KEYS = ["attribute", "arch", "fold", "seed"]
 SUMMARY_METRICS = [
@@ -425,6 +425,17 @@ def write_report(cfg, out_dir, ranked, sensitivity):
                  "</div></div>")
     s.append("<p class='meta'>GFLOPs from thop (2 × MACs); thop does not count ViT's attention matrix products "
              "(about 1.4 GFLOPs for ViT-B/16), so ViT is slightly undercounted.</p>")
+    if "onnx_cpu_medians_ms" in profile.columns:
+        lat = profile.reindex(order).dropna(subset=["onnx_cpu_ms"])
+        first_lat = lat.iloc[0]
+        s.append(f"<h3>ONNX Runtime CPU latency protocol</h3><p>Batch size 1, {int(first_lat['onnx_threads'])} "
+                 f"intra-op threads (fixed), {int(first_lat['onnx_warmup'])} warm-up and {int(first_lat['onnx_runs'])} "
+                 f"timed runs per process, repeated in {int(first_lat['onnx_repeats'])} separate processes; ONNX Runtime "
+                 f"{_e(first_lat['ort_version'])}. The ranking uses the median of the per-process medians. Per-run "
+                 "detail in onnx_latency.csv.</p>")
+        s.append(_table(["Model", "Median of medians (ms)", "Per-process medians (ms)", "IQR, median over processes (ms)"],
+                        [[_e(r["model"]), _num(r["onnx_cpu_ms"], 1), _e(str(r["onnx_cpu_medians_ms"]).replace(";", " / ")),
+                          _num(r["onnx_cpu_iqr_ms"], 1)] for _, r in lat.iterrows()]))
 
     s.extend(training_section(per_seed, int(cfg["training"]["epochs"]), order))
     s.extend(source_sections(cfg, out_dir, attrs))
@@ -450,6 +461,20 @@ def write_report(cfg, out_dir, ranked, sensitivity):
                         [[_e(cfg["models"][r["model_a"]]["name"]), _e(cfg["models"][r["model_b"]]["name"]),
                           r["n_pairs"], r["a_right_b_wrong"], r["a_wrong_b_right"], _p(r["p_raw"]), _p(r["p_holm"]),
                           "yes" if r["significant_holm"] else "no", _e(r["method"])] for r in mc["pairs"]]))
+        ps = st.get("mcnemar_per_seed")
+        if ps:
+            seeds = sorted(ps["seeds"], key=int)
+            s.append(f"<h3>{_e(attribute)}: McNemar per seed</h3><p>{_e(ps['note'])}. Added on 2026-10-27, after "
+                     "the first analysis, because the pooled test counts every test image once per seed. A model is "
+                     "significantly worse only when the test is significant in every seed"
+                     + (" (this version decides the tie rule)" if tie_mcnemar_mode(cfg) == "per_seed" else "") + ".</p>")
+            s.append(_table(["Model A", "Model B"] + [f"p (Holm), seed {k}" for k in seeds]
+                            + ["Significant in", "All seeds"],
+                            [[_e(cfg["models"][r["model_a"]]["name"]), _e(cfg["models"][r["model_b"]]["name"])]
+                             + [_p(v) for v in r["p_holm_by_seed"]]
+                             + [f"{r['n_seeds_significant']} of {r['n_seeds']}",
+                                "yes" if r["significant_all_seeds_a_better"] or r["significant_all_seeds_b_better"]
+                                else "no"] for r in ps["summary"]]))
 
     # ranking
     w = cfg["selection"]["weights"]
@@ -471,17 +496,31 @@ def write_report(cfg, out_dir, ranked, sensitivity):
                       _num(r["inference_time_norm"], 2), _num(r["model_size_mb"], 1), _num(r["model_size_norm"], 2),
                       "pass" if r["gradcam"] else "fail", _num(r["gpu_latency_ms"], 1)] for _, r in plain.iterrows()]))
     tie = ranked.sort_values("tie_rank")
+    mode = tie_mcnemar_mode(cfg)
+    other = "pooled" if mode == "per_seed" else "per_seed"
+    has_other = f"tied_{other}" in tie.columns
     s.append(f"<h3>Tie rule{' (the recommendation)' if tie_on else ' (reported, not used)'}</h3><p>A model is tied "
              f"with the best macro-F1 model when it is not significantly worse by McNemar (Holm-corrected, alpha {alpha}) "
              f"and its mean macro-F1 is within one standard deviation of the best ({_num(tie['best_f1_std'].iloc[0])}). "
              "Tied models are ranked by inference time, model size and Grad-CAM only (same weights); the others "
-             "follow in plain-score order.</p>")
+             f"follow in plain-score order. McNemar version: <b>{_e(mode)}</b> (selection.tie_rule.mcnemar)"
+             + (f"; the last columns show the {_e(other)} version, reported, not used" if has_other else "") + ".</p>")
+    pv = lambda v: _e(v) if isinstance(v, str) and v else "–"  # noqa: E731
     s.append(_table(["Rank", "Model", "Tied", "Macro-F1", "Gap to best", "McNemar p (Holm) vs best",
-                     "Speed/size/Grad-CAM score", "Note"],
+                     "Speed/size/Grad-CAM score", "Note"] + ([f"Tied ({_e(other)})", f"Rank ({_e(other)})"]
+                                                            if has_other else []),
                     [[r["tie_rank"], f"<b>{_e(r['model'])}</b>" if r["tie_rank"] == 1 else _e(r["model"]),
-                      "yes" if r["tied"] else "no", _num(r["macro_f1"]), _num(r["f1_gap"]),
-                      _e(r["mcnemar_p_holm"]) if isinstance(r["mcnemar_p_holm"], str) and r["mcnemar_p_holm"] else "–",
-                      _num(r["tie_score"]), _e(r["tie_note"])] for _, r in tie.iterrows()]))
+                      "yes" if r["tied"] else "no", _num(r["macro_f1"]), _num(r["f1_gap"]), pv(r["mcnemar_p_holm"]),
+                      _num(r["tie_score"]), _e(r["tie_note"])]
+                     + (["yes" if r[f"tied_{other}"] else "no", r[f"tie_rank_{other}"]] if has_other else [])
+                     for _, r in tie.iterrows()]))
+    if has_other:
+        alt = tie.sort_values(f"tie_rank_{other}")
+        same_set = set(tie.loc[tie["tied"], "arch"]) == set(tie.loc[tie[f"tied_{other}"].astype(bool), "arch"])
+        s.append(f"<p>With the {_e(other)} McNemar test the tie set <b>{'would be the same' if same_set else 'would differ'}"
+                 f"</b> ({_e(', '.join(alt.loc[alt[f'tied_{other}'].astype(bool), 'model']))}) and the recommendation "
+                 f"<b>{'would be the same' if alt.iloc[0]['arch'] == tie.iloc[0]['arch'] else 'would change'}</b> "
+                 f"({_e(alt.iloc[0]['model'])}).</p>")
     changed = any(x["changed"] for x in sensitivity)
     s.append("<h3>Sensitivity check (plain weighted score)</h3><p>Weights as macro-F1 / inference time / model size / "
              f"Grad-CAM (%). The winner <b>{'changes' if changed else 'does not change'}</b> under the alternative "
@@ -510,6 +549,17 @@ def write_report(cfg, out_dir, ranked, sensitivity):
         else:
             s.append(f"<figure><figcaption>{cap}<br>{_e(p['gradcam_error'])}</figcaption></figure>")
     s.append("</div>")
+
+    err_root = out_dir / "error_analysis"
+    if err_root.is_dir():
+        s.append("<h2>Error analysis</h2><p>Contact sheets of misclassified cross-validation test photos, one cell per "
+                 "photo with photo ID, country and how many seeds got it wrong (scripts/review_sheets.py errors). "
+                 "Read-only: no label or data was changed. index.csv lists every photo with its review verdict.</p>")
+        for arch_dir in sorted(p for p in err_root.iterdir() if p.is_dir()):
+            name = cfg["models"].get(arch_dir.name, {}).get("name", arch_dir.name)
+            links = [f"<a href='{_e(_rel(f, out_dir))}'>{_e(f.stem)}</a>" for f in sorted(arch_dir.glob("*.jpg"))]
+            links.append(f"<a href='{_e(_rel(arch_dir / 'index.csv', out_dir))}'>index.csv</a>")
+            s.append(f"<p><b>{_e(name)}</b>: {' · '.join(links)}</p>")
 
     s.append("<h2>Confusion matrices</h2>")
     rows = []

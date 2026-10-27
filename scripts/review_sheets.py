@@ -3,9 +3,14 @@
     python scripts/review_sheets.py sheets --run cleaned      # data/review/sheets/<genus>_NN.jpg + index.csv
     python scripts/review_sheets.py audit                      # data/review/audit/audit.jpg + audit_sample.csv
     python scripts/review_sheets.py summary --run cleaned      # verdict counts and training-side groups
+    python scripts/review_sheets.py errors --results results/full_genus_v1 --arch resnet50
+                                                               # misclassified CV test photos (read-only)
 
 Every photo in data/labels.csv goes on exactly one sheet (per genus, in labels.csv order), at most
 30 per sheet in 5 columns, with its photo_id (from the run's metadata.csv) printed under it.
+The error sheets show one model's misclassified cross-validation test photos for the chosen
+confusions, once per photo with how many seeds got it wrong, plus photo_id, country and the
+review verdict; they go in results/<run>/error_analysis/<arch>/ and change no label or data.
 The audit sample is 20 photos from data/removals_proposed.csv and 20 marked usable in
 data/review_log.csv, drawn with a fixed seed, with each verdict printed under the photo.
 """
@@ -132,6 +137,50 @@ def cmd_summary(args):
     return 1 if low else 0
 
 
+ERROR_SETS = {  # sheet name -> (true genus, predicted genera or None for any other)
+    "scylla_to_portunus": ("Scylla", {"Portunus"}),
+    "charybdis_to_portunus": ("Charybdis", {"Portunus"}),
+    "atergatis_to_other": ("Atergatis", None),
+}
+
+
+def cmd_errors(args):
+    results = Path(args.results)
+    preds = pd.concat([pd.read_csv(f).assign(run=f.stem) for f in sorted((results / "predictions").glob(
+        f"{args.arch}_*.csv"))], ignore_index=True)
+    n_seeds =preds["run"].str.split("_").str[-2].nunique()  # <arch>_<attribute>_<seed>_<fold>
+    df = labels_with_ids(args.run)
+    log = pd.read_csv(DATA / "review_log.csv", dtype=str, keep_default_na=False)[["photo_id", "verdict", "reason"]]
+    info = df[["image_path", "photo_id", "country", "species", "source"]].merge(log, on="photo_id", how="left")
+    out_dir = results / "error_analysis" / args.arch
+    rows = []
+    for name, (true, targets) in ERROR_SETS.items():
+        wrong = preds[(preds["true_label"] == true) & (preds["pred_label"] != true)]
+        if targets is not None:
+            wrong = wrong[wrong["pred_label"].isin(targets)]
+        tested = preds[preds["true_label"] == true].groupby("image_path").size()
+        g = wrong.groupby("image_path").agg(crab_id=("crab_id", "first"), n_wrong=("pred_label", "size"),
+                                             predicted=("pred_label", lambda v: "/".join(sorted(set(v)))))
+        g = g.join(tested.rename("n_tested")).reset_index().merge(info, on="image_path", how="left")
+        g = g.sort_values(["n_wrong", "country", "photo_id"], ascending=[False, True, True])
+        recs = g.to_dict("records")
+        for k in range(0, len(recs), PER_SHEET):
+            chunk = recs[k:k + PER_SHEET]
+            draw_sheet(chunk, out_dir / f"{name}_{k // PER_SHEET + 1:02d}.jpg",
+                       [[f"{k + i + 1}. {r['photo_id']} {r['country']}",
+                         f"{true[:4]}>{r['predicted']} {r['n_wrong']}/{r['n_tested']}"] for i, r in enumerate(chunk)])
+        rows += [{"sheet": name, "position": i + 1, "true_label": true, **{c: r[c] for c in (
+            "predicted", "n_wrong", "n_tested", "photo_id", "country", "species", "source", "crab_id", "verdict",
+            "reason", "image_path")}} for i, r in enumerate(recs)]
+        all_true = preds[preds["true_label"] == true].drop_duplicates("image_path").merge(info, on="image_path")
+        print(f"{name}: {len(recs)} photos ({g['crab_id'].nunique()} observers) wrong in at least one of "
+              f"{n_seeds} seeds, {int((g['n_wrong'] == g['n_tested']).sum())} in every seed")
+        print("   country of errors:", g["country"].value_counts().to_dict())
+        print("   country of all test photos of this genus:", all_true["country"].value_counts().to_dict())
+    pd.DataFrame(rows).to_csv(out_dir / "index.csv", index=False)
+    print(f"sheets and index.csv in {out_dir}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -139,8 +188,13 @@ def main():
         p = sub.add_parser(name)
         p.add_argument("--run", default="cleaned", help="builder run whose metadata.csv gives photo_id")
     sub.add_parser("audit").add_argument("--seed", type=int, default=0)
+    p = sub.add_parser("errors")
+    p.add_argument("--results", required=True, help="results folder, e.g. results/full_genus_v1")
+    p.add_argument("--arch", default="resnet50")
+    p.add_argument("--run", default="cleaned", help="builder run whose metadata.csv gives photo_id")
     args = ap.parse_args()
-    sys.exit({"sheets": cmd_sheets, "audit": cmd_audit, "summary": cmd_summary}[args.cmd](args) or 0)
+    sys.exit({"sheets": cmd_sheets, "audit": cmd_audit, "summary": cmd_summary, "errors": cmd_errors}[args.cmd](args)
+             or 0)
 
 
 if __name__ == "__main__":

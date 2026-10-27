@@ -22,7 +22,7 @@ import pandas as pd
 import torch
 
 from src.config import ConfigError, load_config
-from src.analyze import analyze
+from src.analyze import ANALYSIS_STEPS, analyze
 from src.data import (ATTRIBUTES, SPLIT_SETS, SplitError, crab_finer, get_split, load_labels, prepare_attribute,
                       source_balance, split_external)
 from src.select import write_ranking
@@ -50,11 +50,15 @@ def parse_args(argv=None):
     ap.add_argument("--splits-only", action="store_true", help="make/check the splits and stop")
     ap.add_argument("--analyze-only", action="store_true",
                     help="skip training; run statistics, Grad-CAM, ONNX and FLOPs on results/<run_name>/")
+    ap.add_argument("--analyze-steps", nargs="+", default=list(ANALYSIS_STEPS), choices=list(ANALYSIS_STEPS),
+                    help="with --analyze-only: run only these analysis steps (default: all); the others are kept "
+                         "from the earlier analysis. Ranking and report.html are always rebuilt")
     return ap.parse_args(argv)
 
 
-def run_analysis(cfg, out_dir, device):
-    stats, profile = analyze(cfg, out_dir, device)
+def run_analysis(cfg, out_dir, device, steps=ANALYSIS_STEPS):
+    log.info("Analysis steps: %s", ", ".join(steps))
+    stats, profile = analyze(cfg, out_dir, device, steps)
     for attribute, st in stats["attributes"].items():
         fr = st["friedman"]
         log.info("%s Friedman over %d %s(s): chi2 %s p %s (%s)", attribute, fr["n_blocks"], fr["block"],
@@ -236,7 +240,7 @@ def main(argv=None):
                 raise FileNotFoundError(f"No per_seed.csv in {out_dir}; train first or check --run-name")
             device = resolve_device(cfg)
             limit_gpu_memory(cfg, device)
-            run_analysis(cfg, out_dir, device)
+            run_analysis(cfg, out_dir, device, tuple(args.analyze_steps))
             return 0
 
         df = load_labels(cfg["data"]["labels_csv"])

@@ -6,8 +6,15 @@ Friedman (per attribute) compares the five models on test macro-F1:
     blocks are not independent samples; the result is marked accordingly.
 
 McNemar (per attribute, every pair of models) uses the saved test-set
-predictions, pooled over all runs (folds and seeds) and paired by
-(fold, seed, image). p-values are Holm-corrected across the pairs.
+predictions, paired by (fold, seed, image), in two versions:
+  - pooled: all runs (folds and seeds) together, Holm-corrected across the pairs.
+    With several seeds every test image appears once per seed, so the pairs
+    are not independent and the p-values are too small.
+  - per seed (added 2026-10-27, after the first analysis of full_genus_v1): one
+    test per seed, pooled over the folds, so every test image appears once;
+    Holm-corrected across the pairs within each seed. The tie rule
+    (selection.tie_rule.mcnemar: per_seed) counts a model as significantly
+    worse only when it is significant in every seed.
 """
 import itertools
 import json
@@ -80,8 +87,12 @@ def load_predictions(per_seed, attribute):
     return pd.concat(frames, ignore_index=True)
 
 
-def mcnemar_pairs(per_seed, attribute, model_order):
-    preds = load_predictions(per_seed, attribute)
+PER_SEED_NOTE = ("one test per seed, pooled over the folds (every test image once); Holm-corrected across the "
+                 "pairs within each seed")
+
+
+def mcnemar_pairs(per_seed, attribute, model_order, preds=None):
+    preds = load_predictions(per_seed, attribute) if preds is None else preds
     wide = preds.pivot_table(index=["fold", "seed", "image_path"], columns="arch", values="correct", aggfunc="first")
     models = [m for m in model_order if m in wide.columns]
     rows = []
@@ -109,6 +120,29 @@ def mcnemar_pairs(per_seed, attribute, model_order):
     return rows
 
 
+def mcnemar_per_seed(per_seed, attribute, model_order, alpha):
+    """{seed: McNemar pairs} with each seed's own Holm correction, and a summary per pair across seeds."""
+    preds = load_predictions(per_seed, attribute)
+    by_seed = {}
+    for seed in sorted(preds["seed"].unique()):
+        pairs = mcnemar_pairs(per_seed, attribute, model_order, preds[preds["seed"] == seed])
+        for r in pairs:
+            r["significant_holm"] = bool(r["p_holm"] < alpha)
+        by_seed[int(seed)] = pairs
+    summary = []
+    for i, first in enumerate(next(iter(by_seed.values()), [])):
+        rows = [pairs[i] for pairs in by_seed.values()]
+        a_better = [r["a_right_b_wrong"] > r["a_wrong_b_right"] for r in rows]
+        summary.append({"model_a": first["model_a"], "model_b": first["model_b"],
+                        "p_holm_by_seed": [r["p_holm"] for r in rows],
+                        "n_seeds_significant": sum(r["significant_holm"] for r in rows),
+                        "n_seeds": len(rows),
+                        "significant_all_seeds_a_better": all(r["significant_holm"] for r in rows) and all(a_better),
+                        "significant_all_seeds_b_better": (all(r["significant_holm"] for r in rows)
+                                                           and not any(a_better))})
+    return {"note": PER_SEED_NOTE, "seeds": by_seed, "summary": summary}
+
+
 def run_stats(out_dir, model_order, alpha=0.05, attributes=None):
     """Friedman and McNemar tests per attribute; with `attributes`, only those (the analysed ones)."""
     out_dir = Path(out_dir)
@@ -122,9 +156,13 @@ def run_stats(out_dir, model_order, alpha=0.05, attributes=None):
         results["attributes"][attribute] = {
             "friedman": friedman(per_seed, attribute, model_order),
             "mcnemar": {"note": POOLED_CAUTION, "pairs": pairs},
+            "mcnemar_per_seed": mcnemar_per_seed(per_seed, attribute, model_order, alpha),
         }
     with open(out_dir / "stats.json", "w", encoding="utf-8") as f:
         json.dump(_clean(results), f, indent=1, allow_nan=False)
     pairs = [{"attribute": a, **r} for a, v in results["attributes"].items() for r in v["mcnemar"]["pairs"]]
     pd.DataFrame(pairs).to_csv(out_dir / "mcnemar.csv", index=False)
+    per_seed_rows = [{"attribute": a, "seed": seed, **r} for a, v in results["attributes"].items()
+                     for seed, prs in v["mcnemar_per_seed"]["seeds"].items() for r in prs]
+    pd.DataFrame(per_seed_rows).to_csv(out_dir / "mcnemar_per_seed.csv", index=False)
     return results

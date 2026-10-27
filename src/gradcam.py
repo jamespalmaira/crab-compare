@@ -10,6 +10,7 @@ reported as degenerate but still passes: that reflects an untrained model,
 not an incompatible architecture.
 """
 import logging
+import re
 from pathlib import Path
 
 import matplotlib
@@ -33,6 +34,14 @@ TARGET_LAYERS = {
     "mobilenetv3_large_100": ("blocks[-1]", lambda m: m.blocks[-1]),
     "vit_base_patch16_224": ("blocks[-1].norm1", lambda m: m.blocks[-1].norm1),
 }
+
+
+UNSAFE_FILENAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')  # characters Windows does not allow in a filename
+
+
+def safe_filename(text):
+    """text with every character Windows disallows replaced by '_' (crab_id is e.g. observer:inaturalist:123)."""
+    return UNSAFE_FILENAME.sub("_", str(text)).rstrip(" .")
 
 
 def vit_reshape_transform(model):
@@ -83,7 +92,7 @@ def run_gradcam(model, arch, pred_df, image_root, data_cfg, aug_cfg, out_dir, de
 
         overlays = [show_cam_on_image(rgb, m, use_rgb=True) for rgb, m in zip(rgbs, maps)]
         for i, (ov, (_, r)) in enumerate(zip(overlays, pred_df.iterrows())):
-            name = f"{i:02d}_{r['crab_id']}_true-{r['true_label']}_pred-{r['pred_label']}.png"
+            name = safe_filename(f"{i:02d}_{r['crab_id']}_true-{r['true_label']}_pred-{r['pred_label']}") + ".png"
             Image.fromarray(ov).save(out_dir / name)
         result["gradcam_grid"] = str(save_grid(overlays, pred_df, out_dir / "grid.png", title))
         result["gradcam_pass"] = True

@@ -6,6 +6,7 @@ downloaded. Takes about half a minute.
     python -m unittest discover -s tests -t . -v
 """
 import logging
+import os
 import shutil
 import tempfile
 import unittest
@@ -17,8 +18,8 @@ import torch
 
 from scripts.make_dummy_data import make_dummy_dataset
 from src.config import load_config
-from src.export import check_onnx, export_onnx, flops
-from src.gradcam import TARGET_LAYERS, run_gradcam
+from src.export import check_onnx, export_onnx, flops, onnx_input_size, onnx_latency, time_onnx
+from src.gradcam import TARGET_LAYERS, run_gradcam, safe_filename
 from src.models import create_model, model_data_config
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +60,24 @@ class ExplainExportTests(unittest.TestCase):
                 self.assertEqual(len(list(out.glob("0*.png"))), 2)
                 self.assertTrue((out / "grid.png").exists())
 
+    def test_safe_filename(self):
+        self.assertEqual(safe_filename('00_observer:inaturalist:6834136_true-A_pred-B'),
+                         "00_observer_inaturalist_6834136_true-A_pred-B")
+        self.assertEqual(safe_filename('a<b>c"d/e\\f|g?h*i.'), "a_b_c_d_e_f_g_h_i")
+
+    def test_gradcam_crab_id_with_colons(self):
+        # real crab_ids are observer:<source>:<id>; colons are not allowed in Windows filenames
+        model = create_model("mobilenetv3_large_100", 2, pretrained=False)
+        sample = self.sample.assign(crab_id=["observer:inaturalist:6834136", "observer:gbif:1"])
+        out = self.tmp / "cam_colons"
+        res = run_gradcam(model, "mobilenetv3_large_100", sample, self.image_root, model_data_config(model),
+                          self.aug, out, CPU, "colons")
+        self.assertTrue(res["gradcam_pass"], res["gradcam_error"])
+        names = sorted(p.name for p in out.glob("0*.png"))
+        self.assertEqual(len(names), 2)
+        self.assertTrue(names[0].startswith("00_observer_inaturalist_6834136_true-"), names)
+        self.assertFalse(any(":" in n for n in names))
+
     def test_gradcam_failure_is_recorded_not_raised(self):
         model = create_model("mobilenetv3_large_100", 2, pretrained=False)
         bad = self.sample.assign(image_path="missing.jpg")
@@ -72,10 +91,24 @@ class ExplainExportTests(unittest.TestCase):
         model = create_model("mobilenetv3_large_100", 3, pretrained=False).eval()
         size = tuple(model_data_config(model)["input_size"])
         path = export_onnx(model, size, self.tmp / "onnx" / "m.onnx")
-        res = check_onnx(model, path, size, rtol=1e-3, atol=1e-4, warmup=1, runs=2)
+        res = check_onnx(model, path, size, rtol=1e-3, atol=1e-4)
         self.assertTrue(res["onnx_outputs_match"], res["onnx_max_abs_diff"])
         self.assertGreater(res["onnx_size_mb"], 1)
-        self.assertGreater(res["onnx_cpu_ms"], 0)
+        self.assertEqual(onnx_input_size(path), size)
+
+        t = time_onnx(path, size, threads=2, warmup=1, runs=5)
+        self.assertLessEqual(t["q1_ms"], t["median_ms"])
+        self.assertLessEqual(t["median_ms"], t["q3_ms"])
+        self.assertAlmostEqual(t["iqr_ms"], t["q3_ms"] - t["q1_ms"])
+        self.assertEqual((t["threads"], t["warmup"], t["runs"]), (2, 1, 5))
+
+        # the protocol: one new process per model and repeat, median of the per-process medians
+        rows, summary = onnx_latency({"m": (path, size)}, {"threads": 2, "warmup": 1, "runs": 3, "repeats": 3})
+        self.assertEqual(list(rows["repeat"]), [1, 2, 3])
+        self.assertEqual(rows["pid"].nunique(), 3)
+        self.assertNotIn(os.getpid(), set(rows["pid"]))
+        self.assertAlmostEqual(summary["m"]["onnx_cpu_ms"], float(rows["median_ms"].median()))
+        self.assertEqual((summary["m"]["onnx_threads"], summary["m"]["onnx_repeats"]), (2, 3))
 
     def test_flops_do_not_modify_the_model(self):
         model = create_model("mobilenetv3_large_100", 3, pretrained=False)
