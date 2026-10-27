@@ -282,6 +282,36 @@ def source_sections(cfg, out_dir, attrs=None):
 SMALL_GROUPS = 10  # external classes with fewer groups are marked small
 
 
+def training_section(per_seed, max_epochs, model_order=None):
+    """Epochs used and best epoch per model (mean and range over runs), and how many runs used every epoch.
+
+    A model where a third or more of its runs reached max_epochs without early stopping is flagged:
+    it may still have been improving when training stopped.
+    """
+    s = ["<h2>Epochs used and best epoch</h2><p>Per model over its runs (folds × seeds): epochs trained before "
+         f"early stopping or the maximum of {max_epochs}, and the epoch with the best validation macro-F1 (the "
+         "checkpoint that was tested). Mean (min–max).</p>"]
+    for attribute, g in per_seed.groupby("attribute", sort=False):
+        archs = [a for a in (model_order or []) if a in set(g["arch"])] or list(dict.fromkeys(g["arch"]))
+        rows, flagged = [], []
+        for arch in archs:
+            r = g[g["arch"] == arch]
+            full = int((r["epochs_trained"] >= max_epochs).sum())
+            if full * 3 >= len(r):
+                flagged.append(r["model"].iloc[0])
+            rows.append([_e(r["model"].iloc[0]), len(r),
+                         f"{r['epochs_trained'].mean():.1f} ({r['epochs_trained'].min()}–{r['epochs_trained'].max()})",
+                         f"{r['best_epoch'].mean():.1f} ({r['best_epoch'].min()}–{r['best_epoch'].max()})",
+                         f"{full} of {len(r)}"])
+        s.append(f"<h3>{_e(attribute)}</h3>")
+        s.append(_table(["Model", "Runs", "Epochs used", "Best epoch", f"Ran all {max_epochs} (no early stop)"], rows))
+        s.append("<p class='meta'>" + (f"Flagged (a third or more of runs used all {max_epochs} epochs): "
+                                       + ", ".join(_e(m) for m in flagged) if flagged else
+                                       f"No model had a third or more of its runs use all {max_epochs} epochs.")
+                 + "</p>")
+    return s
+
+
 def external_section(cfg, out_dir, attrs=None):
     """The external test set (data.external_test): what was held out, and every model's results on it."""
     out_dir = Path(out_dir)
@@ -396,6 +426,7 @@ def write_report(cfg, out_dir, ranked, sensitivity):
     s.append("<p class='meta'>GFLOPs from thop (2 × MACs); thop does not count ViT's attention matrix products "
              "(about 1.4 GFLOPs for ViT-B/16), so ViT is slightly undercounted.</p>")
 
+    s.extend(training_section(per_seed, int(cfg["training"]["epochs"]), order))
     s.extend(source_sections(cfg, out_dir, attrs))
     s.extend(external_section(cfg, out_dir, attrs))
 

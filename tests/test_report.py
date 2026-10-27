@@ -5,7 +5,9 @@
 import math
 import unittest
 
-from src.report import _nice_max, bar_chart
+import pandas as pd
+
+from src.report import _nice_max, bar_chart, training_section
 
 
 class ReportTests(unittest.TestCase):
@@ -21,6 +23,19 @@ class ReportTests(unittest.TestCase):
         svg = bar_chart("t <x>", ["<b>&"], [1.0])
         self.assertNotIn("<b>&", svg)
         self.assertIn("&lt;b&gt;&amp;", svg)
+
+    def test_training_section_counts_and_flags(self):
+        per_seed = pd.DataFrame({
+            "attribute": ["genus"] * 6, "arch": ["a"] * 3 + ["b"] * 3, "model": ["A"] * 3 + ["B"] * 3,
+            "epochs_trained": [50, 20, 30, 15, 16, 50], "best_epoch": [45, 10, 20, 5, 6, 40]})
+        html = "".join(training_section(per_seed, 50, ["b", "a"]))
+        self.assertLess(html.index("<td>B</td>"), html.index("<td>A</td>"))  # model order kept
+        self.assertIn("33.3 (20–50)", html)
+        self.assertIn("25.0 (10–45)", html)
+        self.assertEqual(html.count("1 of 3"), 2)
+        self.assertIn("Flagged (a third or more of runs used all 50 epochs): B, A", html)
+        per_seed["epochs_trained"] = [20, 20, 30, 15, 16, 49]
+        self.assertIn("No model had", "".join(training_section(per_seed, 50)))
 
     def test_nice_axis_max(self):
         self.assertEqual(_nice_max(403.4), 500)

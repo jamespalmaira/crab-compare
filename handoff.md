@@ -5,7 +5,9 @@ A command-line training and comparison bench. It trains five image classifiers o
 
 Out of scope for this bench: the mobile app, the multi-task model, decision-support rules, sex, maturity and disease, and any paper.
 
-## Current status (as of 2026-10-26)
+## Current status (as of 2026-10-27)
+
+**The full run `full_genus_v1` is complete** (75 of 75 runs, genus, 2026-10-26 23:42 to 2026-10-27 23:19, with two pauses that resumed cleanly). Recommended backbone by the pre-declared tie rule: **ResNet-50**. Results, checks and anomalies are under "Full run `full_genus_v1`" below. The status table below is the state before the run, except where that section updates it.
 
 | Item | Status |
 |---|---|
@@ -76,6 +78,39 @@ Out of scope for this bench: the mobile app, the multi-task model, decision-supp
 - **Statistics:** Friedman test across models (folds as blocks), McNemar test for pairs (Holm-corrected).
 - **No containers.** A virtual environment is sufficient for now.
 
+## Full run `full_genus_v1` (completed 2026-10-27)
+
+Pre-declared settings, unchanged. Results in `results/full_genus_v1/` (not in git); backup `backups/full_genus_v1_20261027.zip` (not in git, 7.85 GiB, 711 files, zip test OK). No label or `crab_id` in this run is verified: genus comes from public community identifications, and `crab_id` is an observer grouping key.
+
+### Integrity checks (all passed)
+- 75 of 75 completion markers; `per_seed.csv` has exactly one genus row per (model, fold, seed), with none missing and no duplicates. No NaN in any metric, and every CV test fold contains all 4 genera.
+- No `timing_*` run appears in any table, report or path. Every checkpoint, log, prediction and confusion-matrix path is inside `full_genus_v1`.
+- Leak checks rerun on the real data and the saved split (`data/splits/genus_kfold_seed42.json`): `check_split` passes. In every fold, train, val and test are disjoint by both `crab_id` and `observer_id` and together cover all 508 groups. No Philippine image or observer is in any fold. `external_split.json` matches a fresh `split_external`. Every prediction file contains exactly its fold's test images, and every external prediction file contains exactly the 118 Philippine images. `tests/test_split.py`, `test_external.py` and `test_stratify.py` pass (23 tests).
+- Every run log records seeds {0, 1, 2}, `epochs_max` 50, patience 10, `amp: false`, pretrained weights, effective batch 32, the configured micro-batch, the same lr and weight decay, and k-fold with split seed 42. Each log records one environment: GTX 1650, torch 2.14.1+cu126, CUDA 12.6, cuDNN 9.10.2, timm 1.0.30. The completion markers record the same training, augmentation and split settings, and the cache off. `num_workers` is not written per run; config says 2, and the ~27 s first-epoch validation (worker start-up) matches 2 workers.
+- Two pauses: 11:16–12:51 and 19:17–22:59 on 2026-10-27. Each was resumed with the same command. Each log holds exactly one run header, and no rows are duplicated.
+
+### Anomalies (reported, not fixed)
+1. **Grad-CAM shows "fail" for all five models because of a filename bug, not because of the architectures.** The maps were computed: right shape, finite, 0/8 flat (ViT 1/8). Saving each overlay then raised `OSError: [Errno 22]`, because the PNG name contains the `crab_id` (`observer:inaturalist:<id>`), and colons are not allowed in Windows filenames. The dummy data never had colons. So `gradcam/` is empty, and `gradcam_pass` is False everywhere. **The ranking is not affected:** a criterion on which all models are equal gives each model 1.0, and it would also be equal if all five passed. Fix: make the overlay filename safe in `src/gradcam.py`, then rerun the Grad-CAM step. Not done yet; waiting for the user's go-ahead.
+2. **ONNX CPU latency is not stable between analysis passes.** The automatic analysis gave (ms) EfficientNet-B3 67.9, ResNet-50 87.6, DenseNet-121 61.4, MobileNetV3 8.1, ViT 280.8. The `--analyze-only` rerun gave 74.9, 77.6, 78.3, 8.9, 410.7. That is one timing of 50 runs on a laptop CPU, with no thread pinning. The recommendation is the same in both (ResNet-50), but the **sensitivity check is not**: in the automatic pass the 40/25/20/15 weight set picks DenseNet-121, and in the rerun ResNet-50 wins every set. The current files are from the rerun; the automatic outputs are kept in `results/full_genus_v1/analysis_auto_20261027/`. All accuracy, statistics and external tables are byte-identical between the two; only `onnx_cpu_ms` changed.
+3. **McNemar pools 3 seeds over the same 1,321 images** (3,963 pairs). That makes the pairs not independent and the p-values optimistic. It is why DenseNet-121 counts as "significantly worse" than ResNet-50 (Holm p 0.0027) with a macro-F1 gap of only 0.011, while ViT (gap 0.011, Holm p 0.061) counts as tied.
+
+### Headline results (genus, 5-fold CV × 3 seeds, test folds)
+| Model | Macro-F1 | Accuracy | ROC-AUC | Epochs used | Best epoch | Ran all 50 |
+|---|---|---|---|---|---|---|
+| ResNet-50 | 0.896 ± 0.043 | 0.923 ± 0.024 | 0.983 ± 0.008 | 37.7 (27–50) | 28.2 (17–44) | 2/15 |
+| ViT | 0.885 ± 0.033 | 0.911 ± 0.023 | 0.985 ± 0.005 | 23.1 (14–48) | 13.1 (4–38) | 0/15 |
+| DenseNet-121 | 0.884 ± 0.043 | 0.907 ± 0.031 | 0.981 ± 0.011 | 27.3 (14–47) | 17.3 (4–37) | 0/15 |
+| EfficientNet-B3 | 0.871 ± 0.038 | 0.903 ± 0.026 | 0.977 ± 0.010 | 33.6 (19–50) | 23.8 (9–43) | 1/15 |
+| MobileNetV3 | 0.794 ± 0.044 | 0.851 ± 0.028 | 0.959 ± 0.014 | 32.3 (21–50) | 22.3 (11–41) | 1/15 |
+
+- Friedman over folds: chi² 12.8, p 0.012 (mean ranks ResNet-50 1.8, ViT 2.2, DenseNet-121 2.6, EfficientNet-B3 3.4, MobileNetV3 5.0). The McNemar pairs that are not significant after Holm: ResNet-50–ViT, ViT–DenseNet-121, ViT–EfficientNet-B3 and DenseNet-121–EfficientNet-B3. Every model is significantly better than MobileNetV3.
+- Tie rule: tied with the best are **ResNet-50 and ViT**; ResNet-50 is first on speed, size and Grad-CAM. Plain score (rerun): ResNet-50 0.930, DenseNet-121 0.904, EfficientNet-B3 0.835, ViT 0.596, MobileNetV3 0.500. **Recommended: ResNet-50.** Its advantage is small and depends on folds 0, 1 and 4 (fold 2: 0.828). Its fold range of 0.119 is the largest of the five models.
+- Weakest genera: *Charybdis* (F1 0.67–0.87; MobileNetV3 recall 0.63) and *Scylla* (0.77–0.87), mostly confused with *Portunus*. No genus is near zero recall.
+- Philippine external test: 118 images and 63 groups (*Atergatis* 22/14, *Portunus* 73/42, *Scylla* 21/13, *Charybdis* 2/1, **not measurable**). Macro-F1 over the three measurable genera is 0.86–0.90, at or above CV. Accuracy is 0.88–0.92.
+- Taiwan is the hardest country in CV for every model (accuracy 0.81–0.88). No genus has more than 80% of its photos from one country (the largest is *Atergatis*, 48% Singapore), but every genus has 97–100% from iNaturalist (source-flagged).
+- Species: not trained in this run (pre-declared genus only); there are no species results.
+- `report.html` now has an "Epochs used and best epoch" table (`src/report.py` `training_section`). It was regenerated from the existing tables without re-measuring anything.
+
 ## Open questions
 1. **Taxonomy:** confirm the species names with a taxonomist, in particular the **blue swimming crab** (*Portunus pelagicus* in the sources; the complex has been split into several species) and the ***Scylla*** species, and confirm that excluding *S. paramamosain* is right.
 2. **Scope:** confirm the scope with the adviser: genus-level main task, species as exploratory, sex, maturity and disease out of scope, *Atergatis floridus* as the toxic look-alike, and the mostly non-Philippine data with the Philippine external test as the local check.
@@ -93,8 +128,11 @@ Done: GitHub repo, environment setup and verification, build steps 1–7 tested 
 1. Photo review done (2026-10-26): 60 removals applied after the group cap; every photo in `labels.csv` has a verdict.
 2. Confirm the taxonomy and scope (open questions 1 and 2).
 3. Run `python run.py --attribute all --splits-only` to see the external split, the usable attributes, the genus/species composition of every fold, and the source-balance warnings.
-4. Full run `full_genus_v1` with the pre-declared settings (weights already downloaded); commands under Decisions.
-5. Commit code changes after each step; never commit data or results.
+4. Full run `full_genus_v1`: done 2026-10-27 (see "Full run `full_genus_v1`").
+5. With the user's go-ahead: fix the Grad-CAM overlay filename (Windows-safe `crab_id`), then rerun only the Grad-CAM step so the overlays exist and the check reports correctly. Look at the overlays to see whether the models attend to the crab or to the background.
+6. Decide with the user how to report CPU latency: the current single timing is noisy (see Anomalies). Changing it would be a change to the measurement, so it must be decided and recorded before any rerun of the ranking.
+7. Review the results with the adviser, including the limits: mostly non-Philippine data, genus tied to country, community-ID labels, one main source, a small Philippine test with *Charybdis* not measurable.
+8. Commit code changes after each step; never commit data, results or backups.
 
 ## Expected layout
 ```
