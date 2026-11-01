@@ -5,7 +5,9 @@ A command-line training and comparison bench. It trains five image classifiers o
 
 Out of scope for this bench: the mobile app, the multi-task model, decision-support rules, sex, maturity and disease, and any paper.
 
-## Current status (as of 2026-10-28)
+## Current status (as of 2026-11-01)
+
+**The final model for the app is exported** (run `final_densenet121_v1`, `exports/densenet121_genus_v1/`, outside git); see "Final model for the app". The "uncertain" threshold has not been chosen.
 
 **The full run `full_genus_v1` is complete** (75 of 75 runs, genus, 2026-10-26 23:42 to 2026-10-27 23:19, with two pauses that resumed cleanly). Recommended backbone by the tie rule with the per-seed McNemar correction (added 2026-10-27, after the first analysis): **DenseNet-121**; the first analysis, with the pooled McNemar test, recommended ResNet-50. Results, checks, the post-analysis changes and anomalies are under "Full run `full_genus_v1`" below. The status table below is the state before the run, except where that section updates it.
 
@@ -132,6 +134,19 @@ The first two analysis passes are archived, not deleted: `results/full_genus_v1/
 - `report.html` now has an "Epochs used and best epoch" table, the latency protocol table, per-seed McNemar, both tie-rule versions, Grad-CAM overlays and links to the error sheets.
 - The backup `backups/full_genus_v1_20261027.zip` was made before these changes. It has the first two analyses but not the Grad-CAM overlays, the new latency, the per-seed statistics or the error sheets.
 
+## Final model for the app: `final_densenet121_v1` (2026-11-01)
+
+A new step after the benchmark. `full_genus_v1` was only read: its non-checkpoint files have the same checksums before and after, and its selection rule was not rerun. Code: `src/final.py`, `scripts/final_model.py`, `tests/test_final.py`. Labels are community identifications, not expert-verified, and `crab_id` is an observer grouping key.
+
+- **Training:** DenseNet-121 on the whole training side (1,321 photos, 508 observer groups; no validation split and no early stopping), seed 0, genus, class-weighted loss, effective batch 32, `amp: false`, same augmentation, optimizer and pretrained weights as the benchmark. **19 epochs**, the median best epoch of DenseNet-121's 15 benchmark runs (sorted: 4, 7, 9, 9, 11, 14, 16, **19**, 20, 21, 21, 21, 24, 27, 37). No Philippine photo or observer is on the training side (checked in code).
+- **Two consequences of "same settings":** the cosine schedule stays the benchmark's 50-epoch schedule, cut off at epoch 19 (final learning rate 6.84e-05), so each epoch has the learning rate it had in the benchmark. And with more photos per epoch there are 41 optimizer steps per epoch instead of about 27, so 779 steps in all against about 513 for a benchmark run at epoch 19. With no validation set, nothing confirms that 19 is the best stopping point for this model. Final training loss 0.0289.
+- **Philippine external test, run once** (`external_per_genus.csv`; not used to change anything): *Atergatis* 22 images / 14 groups, recall 0.909; *Portunus* 73 / 42, 0.973; *Scylla* 21 / 13, 0.905; *Charybdis* 2 / 1, **not measurable**. Overall 118 images / 63 groups, accuracy 0.949. This is one seed on a small set, and it is the top of the benchmark DenseNet-121 runs' range on the same set (accuracy 0.856–0.949, mean 0.915). The same set was used in the benchmark's reporting, though never for training, selection of epochs or the ranking. Do not read this as an improvement.
+- **Export** (`exports/densenet121_genus_v1/`): `model.onnx` (28.2 MB, input `input`, output `logits`, dynamic batch; the app applies softmax), `model_meta.json`, `golden/` (`image.jpg`, `input_tensor.npy`, `input_tensor_f32le.bin`, `expected.json`), `confidence_table.csv`, `SHA256SUMS.txt`. ONNX matches PyTorch: largest difference 9.5e-07 on random inputs and on the golden image (tolerance rtol 1e-3, atol 1e-4). All SHA-256s check out. ONNX SHA-256: `9889ebd23fbc43a997cd3ace2de01a80cd6be842c3d2ee6de8b4daf5cbe2044f`.
+- **`model_meta.json` format:** the repo had no written multi-head spec, so this layout was defined here (`format_version` 1, a `heads` list with one head `genus`, ordered labels `Atergatis`, `Charybdis`, `Portunus`, `Scylla`). Check it against what the app expects.
+- **Golden image:** the first Philippine photo by path among CC0 photos, chosen without looking at any prediction (`photo_385088129`, community label *Portunus*, CC0, not used in training). Predicted *Portunus*, 0.9993.
+- **For the app's preprocessing:** RGB, resize the shorter side to 256 (bicubic, keeping the aspect ratio), center crop 224, scale to [0, 1], ImageNet mean and std, NCHW. Training ignored EXIF orientation. The golden tensor checks the ONNX step exactly; a phone's image library will resize slightly differently, so the image-to-tensor step needs its own tolerance check on the device.
+- **`confidence_table.csv`** comes from DenseNet-121's 15 benchmark runs (3,963 test predictions, 1,321 distinct photos): overall, by true genus and by predicted genus (the app only knows the predicted one), with what each threshold would keep. **No threshold is chosen.** Its limit: it describes the benchmark models, trained on less data with early stopping, not the final model, whose confidence may differ. Overall, 23% of predictions fall below 0.8 confidence, where accuracy is 0.36–0.86 per bin; at 0.99 and above accuracy is 0.998. **Safety:** 7 of 396 *Atergatis* predictions were wrong at 0.90 confidence or more, so a threshold alone will not catch every toxic look-alike.
+
 ## Open questions
 1. **Taxonomy:** confirm the species names with a taxonomist, in particular the **blue swimming crab** (*Portunus pelagicus* in the sources; the complex has been split into several species) and the ***Scylla*** species, and confirm that excluding *S. paramamosain* is right.
 2. **Scope:** confirm the scope with the adviser: genus-level main task, species as exploratory, sex, maturity and disease out of scope, *Atergatis floridus* as the toxic look-alike, and the mostly non-Philippine data with the Philippine external test as the local check.
@@ -156,7 +171,10 @@ Done: GitHub repo, environment setup and verification, build steps 1–7 tested 
 8. The ViT and EfficientNet-B3 Grad-CAM maps look uninformative. Decide whether to state this as a limitation or to try another target layer; a new layer would be a change to the method and should be recorded first.
 9. Make a new backup of `results/full_genus_v1` that includes the post-analysis changes.
 10. Review the results with the adviser, including the limits: mostly non-Philippine data, genus tied to country, community-ID labels, one main source, a small Philippine test with *Charybdis* not measurable.
-11. Commit code changes after each step; never commit data, results or backups.
+11. Done 2026-11-01: final model and export (see "Final model for the app").
+12. Choose the "uncertain" threshold from `confidence_table.csv`.
+13. Check `model_meta.json` against the app's expected format, then start the app (not part of this bench; confirm its scope with the adviser, open question 8).
+14. Commit code changes after each step; never commit data, results, backups or exports.
 
 ## Expected layout
 ```
@@ -183,6 +201,9 @@ python run.py --config config.yaml --attribute all --splits-only      # external
 python run.py --config config.yaml --run-name <run> --analyze-only    # re-run statistics, ranking, report
 python run.py --config config.yaml --run-name <run> --analyze-only --analyze-steps gradcam  # one step only (stats, gradcam, onnx, latency)
 python scripts/review_sheets.py errors --results results/<run> --arch resnet50  # error contact sheets, read-only
+python scripts/final_model.py train       # final model: all training-side groups, external test once
+python scripts/final_model.py export      # exports/densenet121_genus_v1: ONNX, meta, golden vectors, SHA-256s
+python scripts/final_model.py confidence  # confidence_table.csv from the benchmark predictions
 python -m tools.dataset_builder --dry-run                             # counts only (widened, observer groups)
 python -m tools.dataset_builder --rebuild-from download --run-name cleaned --overwrite-labels  # after removals
 python scripts/dataset_summary.py --run cleaned                       # totals per genus, external split, disk
