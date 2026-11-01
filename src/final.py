@@ -29,6 +29,7 @@ from src.train import (accumulated_step, amp_enabled, environment_info, make_sca
 log = logging.getLogger(__name__)
 
 CONFIDENCE_EDGES = (0.25, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95, 0.99, 1.00)
+ATERGATIS_CUTOFFS = (0.05, 0.10, 0.20, 0.30, 0.50)
 GOLDEN_LICENSES = ("CC0", "CC-BY")  # the golden image ships with the export, so only open licences
 NOT_MEASURABLE_BELOW_GROUPS = 10
 LABEL_NOTE = ("Labels are community identifications from public sources (iNaturalist, GBIF), not expert-verified. "
@@ -155,6 +156,21 @@ def confidence_table(predictions, classes, edges=CONFIDENCE_EDGES):
     for scope, col in (("true_genus", "true_label"), ("predicted_genus", "pred_label")):
         for c in classes:
             rows += _confidence_rows(df[df[col] == c], scope, c, edges)
+    return pd.DataFrame(rows)
+
+
+def cutoff_table(predictions, label, cutoffs=ATERGATIS_CUTOFFS):
+    """Detection and false alarm rates when label is flagged at prob_<label> >= cutoff. Counts are predictions."""
+    is_label = predictions["true_label"] == label
+    prob = predictions[f"prob_{label}"]
+    rows = []
+    for cutoff in cutoffs:
+        hit = prob >= cutoff
+        rows.append({"cutoff": cutoff, f"n_{label}": int(is_label.sum()),
+                     f"n_{label}_at_or_above": int((hit & is_label).sum()), "detection_rate": float(hit[is_label].mean()),
+                     f"n_non_{label}": int((~is_label).sum()),
+                     f"n_non_{label}_at_or_above": int((hit & ~is_label).sum()),
+                     "false_alarm_rate": float(hit[~is_label].mean())})
     return pd.DataFrame(rows)
 
 

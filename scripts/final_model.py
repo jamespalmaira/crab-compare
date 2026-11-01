@@ -3,6 +3,7 @@
     python scripts/final_model.py train       # all training-side groups, fixed epochs, external test once
     python scripts/final_model.py export      # model.onnx, model_meta.json, golden vectors
     python scripts/final_model.py confidence  # confidence_table.csv from the benchmark predictions, SHA-256s
+    python scripts/final_model.py cutoffs     # atergatis_cutoff_table.csv from the same predictions, SHA-256s
 
 `train` refuses to run twice for one run name, so the external test is only ever done once. Output goes
 to results/<run>/ and to the export folder, both outside git.
@@ -21,7 +22,7 @@ from run import hold_out_external  # noqa: E402
 from src.config import load_config  # noqa: E402
 from src.data import load_labels, prepare_attribute  # noqa: E402
 from src.evaluate import evaluate_external  # noqa: E402
-from src.final import (check_held_out, confidence_table, export_final, external_table, median_best_epoch,  # noqa: E402
+from src.final import (check_held_out, confidence_table, cutoff_table, export_final, external_table, median_best_epoch,  # noqa: E402
                        train_final, write_sha256s)
 from src.train import limit_gpu_memory, resolve_device  # noqa: E402
 
@@ -83,11 +84,26 @@ def cmd_export(args, cfg, out_dir, bench_dir):
     print("\n".join(write_sha256s(export_dir)))
 
 
-def cmd_confidence(args, cfg, out_dir, bench_dir):
+def benchmark_predictions(args, bench_dir):
     files = sorted((bench_dir / "predictions").glob(f"{args.arch}_{args.attribute}_*.csv"))
     if not files:
         raise SystemExit(f"No benchmark predictions of {args.arch} in {bench_dir}")
-    preds = pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+    return files, pd.concat([pd.read_csv(f) for f in files], ignore_index=True)
+
+
+def cmd_cutoffs(args, cfg, out_dir, bench_dir):
+    files, preds = benchmark_predictions(args, bench_dir)
+    table = cutoff_table(preds, "Atergatis")
+    export_dir = Path(args.export_dir)
+    export_dir.mkdir(parents=True, exist_ok=True)
+    table.to_csv(export_dir / "atergatis_cutoff_table.csv", index=False)
+    print(f"{len(files)} prediction files, {len(preds)} predictions, {preds['image_path'].nunique()} distinct images")
+    print(table.round(4).to_string(index=False))
+    print("\n".join(write_sha256s(export_dir)))
+
+
+def cmd_confidence(args, cfg, out_dir, bench_dir):
+    files, preds = benchmark_predictions(args, bench_dir)
     classes = sorted(preds["true_label"].unique())
     table = confidence_table(preds, classes)
     export_dir = Path(args.export_dir)
@@ -100,7 +116,7 @@ def cmd_confidence(args, cfg, out_dir, bench_dir):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["train", "export", "confidence"])
+    ap.add_argument("cmd", choices=["train", "export", "confidence", "cutoffs"])
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--run-name", default="final_densenet121_v1")
     ap.add_argument("--benchmark", default="full_genus_v1", help="benchmark run under results/ (only read)")
@@ -119,7 +135,8 @@ def main(argv=None):
     out_dir, bench_dir = results / args.run_name, results / args.benchmark
     if args.run_name == args.benchmark or args.run_name.startswith("timing_"):
         raise SystemExit(f"{args.run_name} cannot be the final run's name")
-    {"train": cmd_train, "export": cmd_export, "confidence": cmd_confidence}[args.cmd](args, cfg, out_dir, bench_dir)
+    commands = {"train": cmd_train, "export": cmd_export, "confidence": cmd_confidence, "cutoffs": cmd_cutoffs}
+    commands[args.cmd](args, cfg, out_dir, bench_dir)
     return 0
 
 

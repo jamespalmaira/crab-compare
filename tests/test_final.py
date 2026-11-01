@@ -16,7 +16,7 @@ import yaml
 
 from scripts.final_model import main
 from scripts.make_dummy_data import make_dummy_dataset
-from src.final import (check_held_out, confidence_table, external_table, median_best_epoch, select_golden_image,
+from src.final import (check_held_out, confidence_table, cutoff_table, external_table, median_best_epoch, select_golden_image,
                        sha256_file)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,6 +63,15 @@ class FinalHelperTests(unittest.TestCase):
         self.assertEqual(true_a["n_images"].sum(), 2)
         self.assertEqual(pred_a["n_images"].sum(), 1)
         self.assertEqual(t["n_images"].sum(), 4 + 4 + 4)  # overall, by true genus, by predicted genus
+
+    def test_cutoff_table_rates_include_the_cutoff(self):
+        p = pd.DataFrame({"true_label": ["A", "A", "A", "B", "B"], "prob_A": [0.05, 0.3, 0.04, 0.05, 0.0]})
+        t = cutoff_table(p, "A", cutoffs=(0.05, 0.5)).set_index("cutoff")
+        self.assertEqual((t.loc[0.05, "n_A_at_or_above"], t.loc[0.05, "n_A"]), (2, 3))
+        self.assertAlmostEqual(t.loc[0.05, "detection_rate"], 2 / 3)
+        self.assertEqual((t.loc[0.05, "n_non_A_at_or_above"], t.loc[0.05, "n_non_A"]), (1, 2))
+        self.assertEqual(t.loc[0.05, "false_alarm_rate"], 0.5)
+        self.assertEqual((t.loc[0.5, "detection_rate"], t.loc[0.5, "false_alarm_rate"]), (0.0, 0.0))
 
     def test_golden_image_prefers_the_most_open_licence_then_path(self):
         ext = pd.DataFrame({"image_path": ["a", "c", "b", "d"], "license": ["CC-BY-NC", "CC0", "CC-BY", "CC0"]})
