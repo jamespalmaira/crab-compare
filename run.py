@@ -15,7 +15,6 @@ import logging
 import sys
 import time
 import warnings
-from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -23,7 +22,7 @@ import torch
 
 from src.config import ConfigError, load_config
 from src.analyze import ANALYSIS_STEPS, analyze
-from src.data import (ATTRIBUTES, SPLIT_SETS, SplitError, crab_finer, get_split, load_labels, prepare_attribute,
+from src.data import (ATTRIBUTES, GENUS_ONLY, SPLIT_SETS, SplitError, get_split, load_labels, prepare_attribute,
                       source_balance, split_external)
 from src.select import write_ranking
 from src.evaluate import evaluate_external, evaluate_run
@@ -188,28 +187,35 @@ def select_attributes(cfg, df, attributes, out_dir):
     return splits
 
 
+def groups_per_photo_class(rows, ids, attr, classes):
+    """Groups per class, by each photo's own label: a group with photos of two classes counts in both."""
+    part = rows[rows["crab_id"].isin(ids)]
+    return {k: int(v) for k, v in part.groupby(attr)["crab_id"].nunique().reindex(classes, fill_value=0).items()}
+
+
 def summarise_split(split, rows):
-    attr = split["attribute"]
-    crab_class = rows.groupby("crab_id")[attr].first()
+    """Log what each fold holds. Reporting only: the split itself stratifies a group on its most common label."""
+    attr, classes = split["attribute"], split["classes"]
     finer = split.get("stratify_by")
-    log.info("%s: %d crabs, %d images, classes %s, strategy=%s, stratified=%s%s",
-             attr, split["n_crabs"], len(rows), split["classes"], split["strategy"], split["stratified"],
-             f" on {split['stratified_on']}" if finer else "")
-    crab_fine = crab_finer(rows, finer) if finer else None
+    log.info("%s: %d groups, %d images, classes %s, strategy=%s, stratified=%s%s; groups per class are counted by "
+             "each photo's own %s, so a group with photos of two classes counts in both",
+             attr, split["n_crabs"], len(rows), classes, split["strategy"], split["stratified"],
+             f" on {split['stratified_on']}" if finer else "", attr)
     for k, fold in enumerate(split["folds"]):
         parts = []
         for name in SPLIT_SETS:
             ids = fold[name]
             n_img = rows["crab_id"].isin(ids).sum()
-            per_class = dict(sorted(Counter(crab_class[ids]).items()))
-            parts.append(f"{name} {len(ids)} crabs/{n_img} imgs {per_class}")
+            parts.append(f"{name} {len(ids)} groups/{n_img} imgs {groups_per_photo_class(rows, ids, attr, classes)}")
         log.info("  fold %d: %s", k, " | ".join(parts))
         if finer:  # each class's composition by the finer key (groups per species), per set
-            for cls in split["classes"]:
+            for cls in classes:
                 comp = []
                 for name in SPLIT_SETS:
-                    ids = [c for c in fold[name] if crab_class[c] == cls]
-                    comp.append(f"{name} " + ", ".join(f"{v} {n}" for v, n in sorted(Counter(crab_fine[ids]).items())))
+                    part = rows[rows["crab_id"].isin(fold[name]) & (rows[attr] == cls)]
+                    fine = part[finer].where(part[finer] != "", GENUS_ONLY)
+                    groups = part.groupby(fine)["crab_id"].nunique()
+                    comp.append(f"{name} " + ", ".join(f"{v} {n}" for v, n in groups.items()))
                 log.info("    %s by %s: %s", cls, finer, " | ".join(comp))
 
 
