@@ -21,7 +21,7 @@ import torch
 from PIL import Image
 
 from src.config import accumulation_steps
-from src.data import CrabDataset, build_loaders, build_transforms, class_weights, image_root
+from src.data import CrabDataset, build_loaders, build_transforms, class_weights, data_settings, image_root
 from src.export import check_onnx, export_onnx
 from src.models import create_model, model_data_config
 from src.train import (accumulated_step, amp_enabled, environment_info, make_scaler, oom_guard, run_log, set_seed)
@@ -84,7 +84,8 @@ def train_final(cfg, arch, rows, attribute, epochs, seed, out_dir, device):
                 "batch_size": bs, "accumulation_steps": accum, "effective_batch_size": t["effective_batch_size"],
                 "amp": amp, "pretrained": t["pretrained"], "epochs": epochs, "schedule_epochs": t["epochs"],
                 "lr": t["lr"], "weight_decay": t["weight_decay"], "steps_per_epoch": steps_per_epoch,
-                "input_size": list(data_cfg["input_size"]), **environment_info(device)}
+                "input_size": list(data_cfg["input_size"]), **data_settings(cfg, rows, attribute),
+                **environment_info(device)}
         log.info("run %s", json.dumps(info))
 
         criterion = torch.nn.CrossEntropyLoss(weight=class_weights(dataset.targets, len(classes)).to(device))

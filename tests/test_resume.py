@@ -4,6 +4,7 @@ Training and evaluation are replaced by fast fakes; the loop, markers and tables
 
     python -m unittest discover -s tests -t . -v
 """
+import json
 import logging
 import shutil
 import tempfile
@@ -16,6 +17,8 @@ import yaml
 
 import run
 from scripts.make_dummy_data import make_dummy_dataset
+from src.config import load_config
+from src.data import data_settings
 from src.report import RUN_KEYS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -99,6 +102,58 @@ class ResumeTests(unittest.TestCase):
         self.calls.clear()
         self.assertEqual(self.main(extra=["--epochs", "7"]), 2)  # refused with a message, nothing trained
         self.assertEqual(self.calls, [])
+
+    def markers(self):
+        return sorted((self.out / "completed").rglob("*.json"))
+
+    def test_marker_records_workers_cache_and_photo_cap(self):
+        self.assertEqual(self.main(), 0)
+        marker = json.loads(self.markers()[0].read_text(encoding="utf-8"))
+        recorded = marker["data_settings"]
+        self.assertEqual(recorded["num_workers"], 2)
+        self.assertIsNone(recorded["cache_longer_side"])
+        cap = recorded["photo_cap"]
+        self.assertIsNone(cap["max_photos_per_group"])  # dummy labels.csv was not made by the builder
+        self.assertEqual(cap["largest_group_photos"], 2)
+        self.assertEqual(sum(cap["photos_per_class"].values()), 40)
+        self.assertNotIn("num_workers", marker["settings"])  # a record: not part of what must match on resume
+
+    def test_markers_from_before_data_settings_stay_valid(self):
+        self.assertEqual(self.main(), 0)
+        for path in self.markers():
+            old = json.loads(path.read_text(encoding="utf-8"))
+            del old["data_settings"]
+            path.write_text(json.dumps(old), encoding="utf-8")
+        self.calls.clear()
+        self.assertEqual(self.main(), 0)
+        self.assertEqual(self.calls, [])  # nothing retrained
+
+    @unittest.skipUnless((ROOT / "results/full_genus_v1/completed/genus").exists(), "results are outside git")
+    def test_the_finished_full_run_stays_valid(self):
+        cfg = load_config(ROOT / "config.yaml")
+        out = ROOT / "results/full_genus_v1"
+        names = sorted((out / "completed/genus").glob("*.json"))
+        self.assertEqual(len(names), 75)
+        for path in names:
+            m = json.loads(path.read_text(encoding="utf-8"))
+            self.assertTrue(run.completed(cfg, out, "genus", m["arch"], m["fold"], m["seed"]))
+
+    def test_the_builder_cap_comes_from_the_run_that_made_labels_csv(self):
+        data = self.tmp / "b"
+        built, other = data / "external/runs/cleaned", data / "external/runs/other"
+        built.mkdir(parents=True)
+        other.mkdir(parents=True)
+        (data / "labels.csv").write_text("x\n", encoding="utf-8")
+        (built / "labels.csv").write_text("x\n", encoding="utf-8")
+        (built / "run.json").write_text(json.dumps({"max_photos_per_group": 5, "group_cap_seed": 0}), encoding="utf-8")
+        (other / "labels.csv").write_text("y\n", encoding="utf-8")
+        (other / "run.json").write_text(json.dumps({"max_photos_per_group": 9}), encoding="utf-8")
+        rows = pd.DataFrame({"crab_id": ["a", "a", "b"], "genus": ["P", "P", "C"]})
+        cfg = {"data": {"labels_csv": str(data / "labels.csv"), "num_workers": 2, "cache_longer_side": None}}
+        self.assertEqual(data_settings(cfg, rows, "genus"), {
+            "num_workers": 2, "cache_longer_side": None,
+            "photo_cap": {"builder_run": "cleaned", "max_photos_per_group": 5, "group_cap_seed": 0,
+                          "largest_group_photos": 2, "photos_per_class": {"C": 1, "P": 2}}})
 
 
 if __name__ == "__main__":

@@ -22,8 +22,8 @@ import torch
 
 from src.config import ConfigError, load_config
 from src.analyze import ANALYSIS_STEPS, analyze
-from src.data import (ATTRIBUTES, GENUS_ONLY, SPLIT_SETS, SplitError, get_split, load_labels, prepare_attribute,
-                      source_balance, split_external)
+from src.data import (ATTRIBUTES, GENUS_ONLY, SPLIT_SETS, SplitError, data_settings, get_split, load_labels,
+                      prepare_attribute, source_balance, split_external)
 from src.select import write_ranking
 from src.evaluate import evaluate_external, evaluate_run
 from src.report import merge_rows, write_report, write_tables
@@ -131,12 +131,15 @@ def completed(cfg, out_dir, attr, arch, fold, seed):
     return True
 
 
-def mark_completed(cfg, out_dir, attr, arch, fold, seed, seconds):
+def mark_completed(cfg, out_dir, attr, arch, fold, seed, seconds, rows):
+    """data_settings is a record only, kept apart from settings: completed() compares settings, and adding
+    to them would make every marker written before this field existed count as different."""
     path = marker_path(out_dir, attr, arch, fold, seed)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"attribute": attr, "arch": arch, "fold": fold, "seed": seed,
-                               "seconds": round(seconds, 1), "settings": run_settings(cfg, arch)}, indent=1),
+                               "seconds": round(seconds, 1), "settings": run_settings(cfg, arch),
+                               "data_settings": data_settings(cfg, rows, attr)}, indent=1),
                    encoding="utf-8")
     tmp.replace(path)  # written only after the run's rows are in the tables
 
@@ -289,7 +292,7 @@ def main(argv=None):
             # write after every run so finished results survive a later failure
             write_tables(out_dir, run_rows, class_rows, list(cfg["models"]), source_rows, external_rows)
             durations.append(time.perf_counter() - started)
-            mark_completed(cfg, out_dir, attr, arch, fold, seed, durations[-1])
+            mark_completed(cfg, out_dir, attr, arch, fold, seed, durations[-1], rows)
             left = len(todo) - len(durations)
             eta = int(sum(durations) / len(durations) * left / 60)
             log.info("Progress: %d/%d runs done (%d this session), last %.1f min, ETA %dh%02dm for %d left",

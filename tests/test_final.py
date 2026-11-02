@@ -12,12 +12,14 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 import pandas as pd
+import torch
 import yaml
 
 from scripts.final_model import main
 from scripts.make_dummy_data import make_dummy_dataset
+from src.config import load_config
 from src.final import (build_meta, check_held_out, confidence_table, cutoff_table, external_table, median_best_epoch,
-                       select_golden_image, sha256_file)
+                       select_golden_image, sha256_file, train_final)
 
 ROOT = Path(__file__).resolve().parents[1]
 ARCH = "mobilenetv3_large_100"
@@ -155,6 +157,22 @@ class FinalPipelineTests(unittest.TestCase):
         self.assertEqual(run["n_groups"], self.labels.loc[self.labels["country"] != "PH", "crab_id"].nunique())
         self.assertEqual(run["schedule_epochs"], 50)  # the benchmark's schedule, cut off at the fixed epoch
         self.assertEqual(run["optimizer_steps"], 2 * run["steps_per_epoch"])
+
+    def test_run_log_records_workers_cache_and_photo_cap(self):
+        cfg = load_config(self.config)
+        rows = self.labels[self.labels["country"] != "PH"].fillna("")
+        root, level = logging.getLogger(), logging.getLogger().level
+        logging.disable(logging.NOTSET)  # setUpClass turns off the INFO messages the run log is made of
+        root.setLevel(logging.INFO)
+        try:
+            train_final(cfg, ARCH, rows, "genus", 1, 0, self.tmp / "log_check", torch.device("cpu"))
+        finally:
+            root.setLevel(level)
+            logging.disable(logging.WARNING)
+        text = (self.tmp / "log_check" / "logs" / f"{ARCH}_final_seed0.log").read_text(encoding="utf-8")
+        info = json.loads(next(line for line in text.splitlines() if " run {" in line).split(" run ", 1)[1])
+        self.assertEqual((info["num_workers"], info["cache_longer_side"]), (0, None))
+        self.assertEqual(sum(info["photo_cap"]["photos_per_class"].values()), info["n_train"])
 
     def test_external_test_is_run_once(self):
         with self.assertRaises(SystemExit):

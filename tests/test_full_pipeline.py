@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 import pandas as pd
+import torch
 import yaml
 
 import run
@@ -91,6 +92,17 @@ class FullPipelineTests(unittest.TestCase):
         per_seed = pd.read_csv(self.out / "per_seed.csv")
         self.assertEqual(sorted(per_seed["attribute"].unique()), ["genus", "species"])  # species kept in the CSVs
         self.assertEqual(len(per_seed), 2 * 2 * 2 * 2)
+
+    def test_run_info_and_markers_record_workers_cache_and_photo_cap(self):
+        # the run's info is the dict written to its log header; this class turns INFO messages off
+        ckpts = sorted((self.out / "checkpoints" / "genus").glob("*.pth"))
+        self.assertEqual(len(ckpts), 2 * 2 * 2)
+        info = torch.load(ckpts[0], map_location="cpu", weights_only=False)["info"]
+        self.assertEqual((info["num_workers"], info["cache_longer_side"]), (0, None))
+        self.assertEqual(info["photo_cap"]["largest_group_photos"], 2)
+        marker = json.loads(run.marker_path(self.out, "genus", MODELS[0], 0, 0).read_text(encoding="utf-8"))
+        self.assertEqual(marker["data_settings"]["num_workers"], 0)
+        self.assertEqual(marker["data_settings"]["photo_cap"]["largest_group_photos"], 2)
 
     def test_training_order_is_seed_then_fold_then_model(self):
         expected = [(a, m, f, s) for a in ("genus", "species") for s in (0, 1) for f in (0, 1) for m in MODELS]

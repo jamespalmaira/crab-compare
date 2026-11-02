@@ -19,7 +19,7 @@ import torch
 from sklearn.metrics import f1_score
 
 from src.config import accumulation_steps
-from src.data import build_datasets, build_loaders, class_weights
+from src.data import build_datasets, build_loaders, class_weights, data_settings
 from src.models import create_model, model_data_config
 
 log = logging.getLogger(__name__)
@@ -242,7 +242,7 @@ def train_one(cfg, arch, rows, split, fold, seed, out_dir, device):
             "amp": amp, "pretrained": t["pretrained"], "epochs_max": t["epochs"], "lr": t["lr"],
             "weight_decay": t["weight_decay"], "early_stopping_patience": t["early_stopping_patience"],
             "steps_per_epoch": steps_per_epoch, "input_size": list(data_cfg["input_size"]),
-            **environment_info(device),
+            **data_settings(cfg, rows, attribute), **environment_info(device),
         }
         log.info("run %s", json.dumps(info))
 

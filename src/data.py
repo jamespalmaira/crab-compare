@@ -106,6 +106,29 @@ def split_external(df, ext):
     return internal.reset_index(drop=True), external.reset_index(drop=True), info
 
 
+def data_settings(cfg, rows, attribute):
+    """Data-side settings to record with a run: loader workers, image cache and the photo cap.
+
+    The per-observer cap is applied by the dataset builder, so it comes from the run whose labels.csv
+    is this labels.csv (all None if none is). The largest group and the photos per class show what
+    the rows actually hold; run.py itself caps nothing.
+    """
+    labels = Path(cfg["data"]["labels_csv"])
+    cap = {"builder_run": None, "max_photos_per_group": None, "group_cap_seed": None}
+    content = labels.read_bytes() if labels.exists() else None
+    for path in sorted((labels.parent / "external" / "runs").glob("*/labels.csv")):
+        run_json = path.parent / "run.json"
+        if path.read_bytes() == content and run_json.exists():
+            built = json.loads(run_json.read_text(encoding="utf-8"))
+            cap = {"builder_run": path.parent.name, "max_photos_per_group": built.get("max_photos_per_group"),
+                   "group_cap_seed": built.get("group_cap_seed")}
+            break
+    cap["largest_group_photos"] = int(rows.groupby(["crab_id", attribute]).size().max())
+    cap["photos_per_class"] = {k: int(v) for k, v in rows[attribute].value_counts().sort_index().items()}
+    return {"num_workers": cfg["data"]["num_workers"], "cache_longer_side": cfg["data"].get("cache_longer_side"),
+            "photo_cap": cap}
+
+
 def attribute_rows(df, attribute):
     """Rows that have a label for this attribute (blank labels are skipped)."""
     if attribute not in ATTRIBUTES:
