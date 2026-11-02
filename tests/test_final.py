@@ -16,8 +16,8 @@ import yaml
 
 from scripts.final_model import main
 from scripts.make_dummy_data import make_dummy_dataset
-from src.final import (check_held_out, confidence_table, cutoff_table, external_table, median_best_epoch, select_golden_image,
-                       sha256_file)
+from src.final import (build_meta, check_held_out, confidence_table, cutoff_table, external_table, median_best_epoch,
+                       select_golden_image, sha256_file)
 
 ROOT = Path(__file__).resolve().parents[1]
 ARCH = "mobilenetv3_large_100"
@@ -78,6 +78,31 @@ class FinalHelperTests(unittest.TestCase):
         self.assertEqual(select_golden_image(ext)["image_path"], "c")
         with self.assertRaises(ValueError):
             select_golden_image(ext[ext["license"] == "CC-BY-NC"])
+
+    def test_meta_writes_the_resize_note_and_keeps_every_other_field(self):
+        info = {"model": "M", "arch": "a", "attribute": "genus", "classes": ["A", "B"], "n_train": 1, "n_groups": 1,
+                "epochs": 1, "seed": 0}
+        data_cfg = {"input_size": (3, 224, 224), "mean": (0, 0, 0), "std": (1, 1, 1), "crop_pct": 0.875,
+                    "interpolation": "bicubic"}
+        meta = build_meta(info, data_cfg, "sha", "2026-11-01", "run", {"expected": "x"})
+        self.assertEqual(meta["resize_note"], "Training and evaluation used cv2.INTER_CUBIC (bicubic, no antialiasing), "
+                         "not PIL. The golden tensor was made the same way. crab-demo deliberately defaults to "
+                         "PIL-style antialiasing for large phone photos.")
+        self.assertEqual(meta["format_version"], 1)
+        self.assertEqual(list(meta), ["format_version", "model_name", "timm_arch", "run_name", "date", "file", "sha256",
+                                      "input", "heads", "note", "resize_note", "label_notes", "training", "golden"])
+
+    @unittest.skipUnless((ROOT / "exports/densenet121_genus_v1/model_meta.json").exists(), "export is outside git")
+    def test_resize_note_matches_the_export_and_is_the_only_addition(self):
+        saved = json.loads((ROOT / "exports/densenet121_genus_v1/model_meta.json").read_text(encoding="utf-8"))
+        info = {"model": saved["model_name"], "arch": saved["timm_arch"], "attribute": "genus",
+                "classes": saved["heads"][0]["labels"], "n_train": saved["training"]["n_images"],
+                "n_groups": saved["training"]["n_groups"], "epochs": saved["training"]["epochs"],
+                "seed": saved["training"]["seed"]}
+        data_cfg = {"input_size": (3, 224, 224), "mean": saved["input"]["mean"], "std": saved["input"]["std"],
+                    "crop_pct": 0.875, "interpolation": "bicubic"}
+        meta = build_meta(info, data_cfg, saved["sha256"], saved["date"], saved["run_name"], saved["golden"])
+        self.assertEqual(json.loads(json.dumps(meta)), saved)
 
 
 class FinalPipelineTests(unittest.TestCase):

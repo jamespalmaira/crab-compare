@@ -35,6 +35,8 @@ NOT_MEASURABLE_BELOW_GROUPS = 10
 LABEL_NOTE = ("Labels are community identifications from public sources (iNaturalist, GBIF), not expert-verified. "
               "crab_id is an observer grouping key, not an individual crab.")
 LABEL_NOTES = {"Atergatis": "Atergatis floridus: a reported toxic look-alike. It is not an edible crab."}
+RESIZE_NOTE = ("Training and evaluation used cv2.INTER_CUBIC (bicubic, no antialiasing), not PIL. The golden tensor was "
+               "made the same way. crab-demo deliberately defaults to PIL-style antialiasing for large phone photos.")
 
 
 def median_best_epoch(per_seed, arch, attribute):
@@ -223,6 +225,7 @@ def build_meta(info, data_cfg, onnx_sha256, created, run_name, golden):
         "heads": [{"name": info["attribute"], "output_name": "logits", "output_type": "logits",
                    "activation_in_app": "softmax", "num_classes": len(info["classes"]), "labels": info["classes"]}],
         "note": LABEL_NOTE,
+        "resize_note": RESIZE_NOTE,
         "label_notes": {c: n for c, n in LABEL_NOTES.items() if c in info["classes"]},
         "training": {"n_images": info["n_train"], "n_groups": info["n_groups"], "epochs": info["epochs"],
                      "seed": info["seed"], "excludes": "every Philippine photo and observer (external test set)"},
